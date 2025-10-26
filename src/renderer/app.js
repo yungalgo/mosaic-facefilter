@@ -119,11 +119,21 @@ function applyMosaicToFace(landmarks) {
     }
     
     if (DEBUG.logStats && frameCount % 30 === 0) {
-        console.log(`\n🎨 Total triangles available: ${tessellation.length / 3}`);
+        console.log(`\n🔍 Tessellation type: ${typeof tessellation}, isArray: ${Array.isArray(tessellation)}`);
+        console.log(`🔍 Tessellation sample:`, tessellation.slice ? tessellation.slice(0, 9) : 'Not sliceable');
+        console.log(`🎨 Total triangles available: ${tessellation.length / 3}`);
         console.log(`🎯 Drawing every ${TRIANGLE_SKIP} triangles (temperature control)`);
+        console.log(`📊 Landmarks available: ${landmarks.length}`);
+        
+        // Debug first few indices
+        if (tessellation.length > 0) {
+            console.log(`🔍 First triangle indices: [${tessellation[0]}, ${tessellation[1]}, ${tessellation[2]}]`);
+            console.log(`🔍 Landmark check: [${!!landmarks[tessellation[0]]}, ${!!landmarks[tessellation[1]]}, ${!!landmarks[tessellation[2]]}]`);
+        }
     }
     
     let trianglesDrawn = 0;
+    let skippedCount = 0;
     
     // Draw triangles with their average colors
     for (let i = 0; i < tessellation.length; i += 3 * TRIANGLE_SKIP) {
@@ -131,7 +141,17 @@ function applyMosaicToFace(landmarks) {
         const idx2 = tessellation[i + 1];
         const idx3 = tessellation[i + 2];
         
+        // Debug first iteration
+        if (DEBUG.logStats && frameCount % 30 === 0 && i === 0) {
+            console.log(`🔍 Loop iteration 0: indices=[${idx1}, ${idx2}, ${idx3}]`);
+            console.log(`🔍 Landmark exists: [${!!landmarks[idx1]}, ${!!landmarks[idx2]}, ${!!landmarks[idx3]}]`);
+            if (landmarks[idx1]) {
+                console.log(`🔍 First landmark value:`, landmarks[idx1]);
+            }
+        }
+        
         if (!landmarks[idx1] || !landmarks[idx2] || !landmarks[idx3]) {
+            skippedCount++;
             continue;
         }
         
@@ -164,6 +184,7 @@ function applyMosaicToFace(landmarks) {
     
     if (DEBUG.logStats && frameCount % 30 === 0) {
         console.log(`✅ Triangles drawn: ${trianglesDrawn}`);
+        console.log(`⚠️  Triangles skipped (invalid indices): ${skippedCount}`);
     }
 }
 
