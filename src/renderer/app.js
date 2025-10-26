@@ -285,8 +285,8 @@ function applyMosaicToFace(landmarks) {
         const avgBlockWidth = bounds.width / MOSAIC_GRID_COLS;
         const avgBlockHeight = bounds.height / MOSAIC_GRID_ROWS;
         console.log(`✅ 3D Blocks drawn: ${blocksDrawn} / ${MOSAIC_GRID_COLS * MOSAIC_GRID_ROWS}`);
-        console.log(`📏 Average block size: ${avgBlockWidth.toFixed(0)}px x ${avgBlockHeight.toFixed(0)}px`);
-        console.log(`🎯 Target for reference: ~30-40px blocks would match example`);
+        console.log(`📏 BASE block size: ${avgBlockWidth.toFixed(0)}px x ${avgBlockHeight.toFixed(0)}px (before warp)`);
+        console.log(`🎯 With 4x5 grid + extreme warp should match Minecraft-style target`);
     }
 }
 
