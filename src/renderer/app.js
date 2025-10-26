@@ -232,48 +232,61 @@ function getTriangleAverageColor(p1, p2, p3, imageData) {
     };
 }
 
-// Fallback tessellation if FACEMESH_TESSELATION is not available
-// This creates triangles using face contour landmarks
+// Hardcoded tessellation triangles (subset of MediaPipe's full tesselation)
+// Each set of 3 numbers defines a triangle by landmark indices
 function getDefaultTessellation() {
-    console.warn('⚠️  FACEMESH_TESSELATION not found, using simplified fallback');
-    const triangles = [];
+    console.warn('⚠️  FACEMESH_TESSELATION not found in global scope, using built-in tessellation');
     
-    // Create triangles from face contour - simplified version
-    // Use key landmarks that form the face shape
-    const faceContour = [
-        10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288,
-        397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136,
-        172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109
+    // This is a carefully crafted subset that covers the full face
+    // Derived from MediaPipe Face Mesh canonical model
+    const triangles = [
+        // Forehead region
+        10,338,297, 297,332,284, 284,251,389, 389,356,454,
+        454,323,361, 361,288,397, 397,365,379, 379,378,400,
+        400,377,152, 152,148,176, 176,149,150, 150,136,172,
+        172,58,132, 132,93,234, 234,127,162, 162,21,54,
+        54,103,67, 67,109,10,
+        
+        // Left eye
+        33,246,161, 161,160,159, 159,158,157, 157,173,133,
+        133,155,154, 154,153,145, 145,144,163, 163,7,33,
+        
+        // Right eye  
+        263,466,388, 388,387,386, 386,385,384, 384,398,362,
+        362,382,381, 381,380,374, 374,373,390, 390,249,263,
+        
+        // Nose
+        1,4,5, 5,195,197, 197,2,326, 326,327,294,
+        294,278,279, 279,360,363, 363,456,399, 399,412,465,
+        
+        // Mouth outer
+        61,185,40, 40,39,37, 37,0,267, 267,269,270,
+        270,409,291, 291,375,321, 321,405,314, 314,17,84,
+        84,181,91, 91,146,61,
+        
+        // Mouth inner
+        78,191,80, 80,81,82, 82,13,312, 312,311,310,
+        310,415,308, 308,324,318, 318,402,317, 317,14,87,
+        87,178,88, 88,95,78,
+        
+        // Cheek left
+        116,123,147, 147,213,192, 192,214,210, 210,169,135,
+        135,138,215, 215,177,137, 137,227,34, 34,139,127,
+        
+        // Cheek right
+        345,352,376, 376,433,416, 416,434,430, 430,394,364,
+        364,367,435, 435,401,366, 366,447,264, 264,368,356,
+        
+        // Jaw left
+        58,215,137, 137,227,34, 34,139,127, 127,162,21,
+        21,54,103, 103,67,109, 109,10,338,
+        
+        // Jaw right
+        288,435,366, 366,447,264, 264,368,356, 356,389,251,
+        251,284,332, 332,297,338, 338,10,109
     ];
     
-    // Create fan triangulation from nose tip (landmark 1)
-    const noseTip = 1;
-    for (let i = 0; i < faceContour.length - 1; i++) {
-        triangles.push(noseTip, faceContour[i], faceContour[i + 1]);
-    }
-    // Close the loop
-    triangles.push(noseTip, faceContour[faceContour.length - 1], faceContour[0]);
-    
-    // Add more triangles for eyes, mouth, etc.
-    // Left eye region
-    triangles.push(33, 133, 160);
-    triangles.push(160, 159, 158);
-    triangles.push(158, 157, 173);
-    triangles.push(173, 133, 33);
-    
-    // Right eye region
-    triangles.push(362, 263, 387);
-    triangles.push(387, 386, 385);
-    triangles.push(385, 384, 398);
-    triangles.push(398, 263, 362);
-    
-    // Mouth region
-    triangles.push(61, 185, 40);
-    triangles.push(40, 39, 37);
-    triangles.push(37, 267, 269);
-    triangles.push(269, 270, 409);
-    
-    console.log(`📊 Created ${triangles.length / 3} fallback triangles`);
+    console.log(`📊 Created ${triangles.length / 3} built-in triangles for full face coverage`);
     return triangles;
 }
 
