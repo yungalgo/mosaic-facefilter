@@ -27,7 +27,8 @@ let lastVideoTime = -1;
 let programPassA, programPassB, programBlit;
 let fboCanon, texCanon, fboSmall, texSmall;
 let cameraTexture;
-let canonicalUVs = null; // Will be generated
+let canonicalUVs = null; // Will be loaded from canonical_468_uv.json
+let TRI = null; // Will be loaded from triangulation_468.json
 
 // Initialize FaceLandmarker
 async function createFaceLandmarker() {
@@ -49,9 +50,35 @@ async function createFaceLandmarker() {
     console.log('✅ FaceLandmarker ready!');
 }
 
+// Load canonical UV coordinates
+async function loadCanonicalUVs() {
+    console.log('📐 Loading canonical UV coordinates...');
+    const response = await fetch('canonical_468_uv.json');
+    const uvArray = await response.json();
+    canonicalUVs = new Float32Array(uvArray);
+    if (canonicalUVs.length !== 468 * 2) {
+        throw new Error(`Bad UV length: ${canonicalUVs.length}`);
+    }
+    console.log('✅ Canonical UVs loaded');
+}
+
+// Load triangulation indices
+async function loadTriangulation() {
+    console.log('🔺 Loading triangulation...');
+    const response = await fetch('triangulation_468.json');
+    const triArray = await response.json();
+    TRI = new Uint16Array(triArray);
+    console.log(`✅ Triangulation loaded: ${TRI.length / 3} triangles`);
+}
+
 // Initialize WebGL resources
 function initWebGL() {
     console.log('🎨 Initializing WebGL pipeline...');
+    
+    // Set texture upload flip (fixes upside-down video)
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.disable(gl.CULL_FACE);
+    gl.disable(gl.DEPTH_TEST);
     
     // Create shader programs
     programPassA = createProgram(vertexShaderPassA, fragmentShaderPassA);
@@ -128,33 +155,6 @@ function createFramebuffer(width, height) {
     return { fbo, texture };
 }
 
-// Generate canonical UV coordinates (simplified approximation)
-function generateCanonicalUVs(landmarks) {
-    // Find bounding box
-    let minX = Infinity, minY = Infinity;
-    let maxX = -Infinity, maxY = -Infinity;
-    
-    for (const lm of landmarks) {
-        minX = Math.min(minX, lm.x);
-        minY = Math.min(minY, lm.y);
-        maxX = Math.max(maxX, lm.x);
-        maxY = Math.max(maxY, lm.y);
-    }
-    
-    const width = maxX - minX;
-    const height = maxY - minY;
-    const scale = Math.max(width, height);
-    
-    // Normalize to [0, 1] with centering
-    const uvs = new Float32Array(landmarks.length * 2);
-    for (let i = 0; i < landmarks.length; i++) {
-        uvs[i * 2] = (landmarks[i].x - minX) / scale;
-        uvs[i * 2 + 1] = (landmarks[i].y - minY) / scale;
-    }
-    
-    return uvs;
-}
-
 // Start webcam
 async function startCamera() {
     console.log('📹 Starting camera...');
@@ -206,11 +206,6 @@ async function predictWebcam() {
         if (results.faceLandmarks && results.faceLandmarks.length > 0) {
             const landmarks = results.faceLandmarks[0];
             
-            // Generate canonical UVs on first frame
-            if (!canonicalUVs) {
-                canonicalUVs = generateCanonicalUVs(landmarks);
-            }
-            
             // Render pixelated face effect
             renderPixelatedFace(landmarks);
         }
@@ -222,14 +217,12 @@ async function predictWebcam() {
 
 // Render the pixelated face effect (two-pass pipeline)
 function renderPixelatedFace(landmarks) {
-    const tessellation = FaceLandmarker.FACE_LANDMARKS_TESSELATION;
-    
     // PASS A: Unwrap camera to canonical UV space
     gl.bindFramebuffer(gl.FRAMEBUFFER, fboCanon);
     gl.viewport(0, 0, CANON_SIZE, CANON_SIZE);
     gl.clear(gl.COLOR_BUFFER_BIT);
     
-    renderFaceMesh(programPassA, landmarks, tessellation, cameraTexture, true);
+    renderFaceMesh(programPassA, landmarks, TRI, cameraTexture, true);
     
     // PIXELATION: Downsample
     gl.bindFramebuffer(gl.FRAMEBUFFER, fboSmall);
@@ -256,102 +249,66 @@ function renderPixelatedFace(landmarks) {
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     
-    renderFaceMesh(programPassB, landmarks, tessellation, texCanon, false);
+    renderFaceMesh(programPassB, landmarks, TRI, texCanon, false);
     
     gl.disable(gl.BLEND);
 }
 
 // Render face mesh with specified shader program
-function renderFaceMesh(program, landmarks, tessellation, texture, isPassA) {
+function renderFaceMesh(program, landmarks, triIndexBuffer, texture, isPassA) {
     gl.useProgram(program);
     
-    // Build vertex data
-    const vertices = [];
-    const indices = [];
-    let vertexIndex = 0;
+    // Build vertex data directly from triangle indices
+    // Each vertex: [sx, sy, u, v] (4 floats)
+    const verts = new Float32Array(triIndexBuffer.length * 4);
     
-    for (let i = 0; i < tessellation.length; i += 3) {
-        const idx1 = tessellation[i].start;
-        const idx2 = tessellation[i + 1].start;
-        const idx3 = tessellation[i + 2].start;
+    for (let t = 0; t < triIndexBuffer.length; t++) {
+        const i = triIndexBuffer[t];
+        const lm = landmarks[i];
         
-        const lm1 = landmarks[idx1];
-        const lm2 = landmarks[idx2];
-        const lm3 = landmarks[idx3];
+        // Screen position in pixels
+        const sx = lm.x * canvas.width;
+        const sy = lm.y * canvas.height;
         
-        if (!lm1 || !lm2 || !lm3) continue;
+        // Canonical UV coordinates
+        const u = canonicalUVs[i * 2 + 0];
+        const v = canonicalUVs[i * 2 + 1];
         
-        // Screen positions (pixels)
-        const screenPos = [
-            [lm1.x * canvas.width, lm1.y * canvas.height],
-            [lm2.x * canvas.width, lm2.y * canvas.height],
-            [lm3.x * canvas.width, lm3.y * canvas.height]
-        ];
-        
-        // Canonical UVs
-        const uvs = [
-            [canonicalUVs[idx1 * 2], canonicalUVs[idx1 * 2 + 1]],
-            [canonicalUVs[idx2 * 2], canonicalUVs[idx2 * 2 + 1]],
-            [canonicalUVs[idx3 * 2], canonicalUVs[idx3 * 2 + 1]]
-        ];
-        
-        for (let j = 0; j < 3; j++) {
-            vertices.push(
-                screenPos[j][0], screenPos[j][1],  // Screen position
-                uvs[j][0], uvs[j][1]                // Canonical UV
-            );
-            indices.push(vertexIndex++);
-        }
+        const o = t * 4;
+        verts[o + 0] = sx;
+        verts[o + 1] = sy;
+        verts[o + 2] = u;
+        verts[o + 3] = v;
     }
     
-    const vertexData = new Float32Array(vertices);
-    const indexData = new Uint16Array(indices);
-    
-    // Create and bind buffers
+    // Create and bind vertex buffer
     const vbo = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
-    gl.bufferData(gl.ARRAY_BUFFER, vertexData, gl.STATIC_DRAW);
-    
-    const ibo = gl.createBuffer();
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
-    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indexData, gl.STATIC_DRAW);
+    gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW);
     
     // Set attributes
-    if (isPassA) {
-        const aCanonUV = gl.getAttribLocation(program, 'aCanonUV');
-        const aScreenPos = gl.getAttribLocation(program, 'aScreenPos');
-        
-        gl.enableVertexAttribArray(aCanonUV);
-        gl.enableVertexAttribArray(aScreenPos);
-        
-        gl.vertexAttribPointer(aScreenPos, 2, gl.FLOAT, false, 16, 0);
-        gl.vertexAttribPointer(aCanonUV, 2, gl.FLOAT, false, 16, 8);
-        
-        gl.uniform2f(gl.getUniformLocation(program, 'uCanvasSize'), canvas.width, canvas.height);
-    } else {
-        const aScreenPos = gl.getAttribLocation(program, 'aScreenPos');
-        const aCanonUV = gl.getAttribLocation(program, 'aCanonUV');
-        
-        gl.enableVertexAttribArray(aScreenPos);
-        gl.enableVertexAttribArray(aCanonUV);
-        
-        gl.vertexAttribPointer(aScreenPos, 2, gl.FLOAT, false, 16, 0);
-        gl.vertexAttribPointer(aCanonUV, 2, gl.FLOAT, false, 16, 8);
-        
-        gl.uniform2f(gl.getUniformLocation(program, 'uCanvasSize'), canvas.width, canvas.height);
-    }
+    const aScreenPos = gl.getAttribLocation(program, 'aScreenPos');
+    const aCanonUV = gl.getAttribLocation(program, 'aCanonUV');
+    
+    gl.enableVertexAttribArray(aScreenPos);
+    gl.enableVertexAttribArray(aCanonUV);
+    
+    gl.vertexAttribPointer(aScreenPos, 2, gl.FLOAT, false, 16, 0);
+    gl.vertexAttribPointer(aCanonUV, 2, gl.FLOAT, false, 16, 8);
+    
+    // Set uniforms
+    gl.uniform2f(gl.getUniformLocation(program, 'uCanvasSize'), canvas.width, canvas.height);
     
     // Set texture
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, texture);
     gl.uniform1i(gl.getUniformLocation(program, isPassA ? 'uCameraTex' : 'uPixelCanonTex'), 0);
     
-    // Draw
-    gl.drawElements(gl.TRIANGLES, indices.length, gl.UNSIGNED_SHORT, 0);
+    // Draw as triangles directly from the index stream
+    gl.drawArrays(gl.TRIANGLES, 0, triIndexBuffer.length);
     
     // Cleanup
     gl.deleteBuffer(vbo);
-    gl.deleteBuffer(ibo);
 }
 
 // Draw fullscreen quad (for blit operations)
@@ -420,7 +377,7 @@ varying vec2 vCanonUV;
 
 void main() {
     vec2 posNDC = (aScreenPos / uCanvasSize) * 2.0 - 1.0;
-    posNDC.y = -posNDC.y;
+    posNDC.y = -posNDC.y; // Geometry flip (pixel space → NDC space)
     gl_Position = vec4(posNDC, 0.0, 1.0);
     vCanonUV = aCanonUV;
 }
@@ -462,6 +419,8 @@ void main() {
 async function init() {
     console.log('🚀 Starting Mosaic Face Filter (WebGL UV Pipeline)...');
     await createFaceLandmarker();
+    await loadCanonicalUVs();
+    await loadTriangulation();
     await startCamera();
 }
 
