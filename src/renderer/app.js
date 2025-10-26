@@ -11,8 +11,7 @@ let camera;
 
 // Initialize MediaPipe Face Detection
 async function initFaceDetection() {
-    const vision = await FaceDetection.FaceDetection;
-    faceDetector = new FaceDetection.FaceDetection({
+    faceDetector = new FaceDetection({
         locateFile: (file) => {
             return `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}`;
         }
@@ -69,16 +68,23 @@ function onResults(results) {
 
 // Apply mosaic effect to face region
 function applyMosaicToFace(boundingBox) {
-    const x = boundingBox.xCenter * canvas.width - (boundingBox.width * canvas.width) / 2;
-    const y = boundingBox.yCenter * canvas.height - (boundingBox.height * canvas.height) / 2;
-    const width = boundingBox.width * canvas.width;
-    const height = boundingBox.height * canvas.height;
+    let x = boundingBox.xCenter * canvas.width - (boundingBox.width * canvas.width) / 2;
+    let y = boundingBox.yCenter * canvas.height - (boundingBox.height * canvas.height) / 2;
+    let width = boundingBox.width * canvas.width;
+    let height = boundingBox.height * canvas.height;
+    
+    // Clamp to canvas bounds
+    x = Math.max(0, Math.floor(x));
+    y = Math.max(0, Math.floor(y));
+    width = Math.min(width, canvas.width - x);
+    height = Math.min(height, canvas.height - y);
     
     const blockWidth = width / MOSAIC_GRID_COLS;
     const blockHeight = height / MOSAIC_GRID_ROWS;
     
     // Get image data for the face region
-    const imageData = ctx.getImageData(x, y, width, height);
+    try {
+        const imageData = ctx.getImageData(x, y, width, height);
     
     // Process each block
     for (let row = 0; row < MOSAIC_GRID_ROWS; row++) {
@@ -96,7 +102,7 @@ function applyMosaicToFace(boundingBox) {
                 width
             );
             
-            // Draw solid block
+            // Draw solid block with average color
             ctx.fillStyle = `rgb(${avgColor.r}, ${avgColor.g}, ${avgColor.b})`;
             ctx.fillRect(
                 x + blockX,
@@ -106,23 +112,35 @@ function applyMosaicToFace(boundingBox) {
             );
         }
     }
+    } catch (err) {
+        console.error('Error applying mosaic:', err);
+    }
 }
 
 // Calculate average color for a block
 function getAverageColor(imageData, startX, startY, blockWidth, blockHeight, imageWidth) {
     let r = 0, g = 0, b = 0, count = 0;
     
-    const endX = Math.min(startX + blockWidth, imageWidth);
-    const endY = Math.min(startY + blockHeight, imageData.height);
+    const startXInt = Math.floor(startX);
+    const startYInt = Math.floor(startY);
+    const endX = Math.min(Math.ceil(startX + blockWidth), imageWidth);
+    const endY = Math.min(Math.ceil(startY + blockHeight), imageData.height);
     
-    for (let y = Math.floor(startY); y < endY; y++) {
-        for (let x = Math.floor(startX); x < endX; x++) {
+    for (let y = startYInt; y < endY; y++) {
+        for (let x = startXInt; x < endX; x++) {
             const index = (y * imageWidth + x) * 4;
-            r += imageData.data[index];
-            g += imageData.data[index + 1];
-            b += imageData.data[index + 2];
-            count++;
+            if (index >= 0 && index < imageData.data.length) {
+                r += imageData.data[index] || 0;
+                g += imageData.data[index + 1] || 0;
+                b += imageData.data[index + 2] || 0;
+                count++;
+            }
         }
+    }
+    
+    // Prevent division by zero
+    if (count === 0) {
+        return { r: 0, g: 0, b: 0 };
     }
     
     return {
