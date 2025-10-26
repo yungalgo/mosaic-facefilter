@@ -143,7 +143,7 @@ function drawMosaicEffect(landmarks) {
             b: Math.floor(totalB / colorSamples)
         };
         
-        // Draw all triangles in this group with the SAME color
+        // Draw all triangles in this group with the SAME color (no borders for unified look)
         ctx.fillStyle = `rgb(${avgColor.r}, ${avgColor.g}, ${avgColor.b})`;
         
         for (const tri of groupTriangles) {
@@ -153,11 +153,6 @@ function drawMosaicEffect(landmarks) {
             ctx.lineTo(tri.x3, tri.y3);
             ctx.closePath();
             ctx.fill();
-            
-            // Thin borders for debugging
-            ctx.strokeStyle = 'rgba(0, 0, 0, 0.2)';
-            ctx.lineWidth = 0.5;
-            ctx.stroke();
             
             trianglesDrawn++;
         }
