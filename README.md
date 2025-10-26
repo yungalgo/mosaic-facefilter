@@ -1,6 +1,6 @@
 # OS mosaic face filter
 
-real-time stylized face pixelation for streaming. keeps your face anonymous while you move around.
+real-time stylized face pixelation for streaming and recording. keeps your identity anonymous while tracking facial motion.
 
 **made by [@yungalgorithm](https://github.com/yungalgo)**
 
