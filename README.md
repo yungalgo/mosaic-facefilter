@@ -4,8 +4,6 @@ real-time stylized face pixelation for streaming and recording. keeps your ident
 
 ![demo](assets/demo.png)
 
-**made by [@yungalgorithm](https://github.com/yungalgo)**
-
 ## why i made this
 
 saw someone using this filter on instagram and couldn't find it anywhere, so i just built it myself. now you can use it too.
