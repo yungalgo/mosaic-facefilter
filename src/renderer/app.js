@@ -97,14 +97,11 @@ function drawMosaicEffect(landmarks) {
     // Higher = fewer, larger blocks (like Minecraft)
     const GROUP_SIZE = 75; // Merge 75 triangles = very large blocks (fewer total blocks)
     
-    // Process triangles in groups - all triangles in a group get the same color
+    // Process triangles in groups - draw each group with border
     for (let groupStart = 0; groupStart < tessellation.length; groupStart += GROUP_SIZE * 3) {
-        // Calculate average color for entire group
-        let totalR = 0, totalG = 0, totalB = 0;
-        let colorSamples = 0;
         let groupTriangles = [];
         
-        // Collect all triangles in this group and sample their colors
+        // Collect all triangles in this group
         for (let i = groupStart; i < groupStart + (GROUP_SIZE * 3) && i + 2 < tessellation.length; i += 3) {
             const conn1 = tessellation[i];
             const conn2 = tessellation[i + 1];
@@ -125,26 +122,14 @@ function drawMosaicEffect(landmarks) {
             const y3 = p3.y * canvas.height;
             
             groupTriangles.push({ x1, y1, x2, y2, x3, y3 });
-            
-            // Sample color from this triangle's center
-            const color = getTriangleColor(x1, y1, x2, y2, x3, y3, imageData);
-            totalR += color.r;
-            totalG += color.g;
-            totalB += color.b;
-            colorSamples++;
         }
         
-        if (colorSamples === 0) continue;
+        if (groupTriangles.length === 0) continue;
         
-        // Average color for the entire group
-        const avgColor = {
-            r: Math.floor(totalR / colorSamples),
-            g: Math.floor(totalG / colorSamples),
-            b: Math.floor(totalB / colorSamples)
-        };
-        
-        // Draw all triangles in this group with the SAME color (no borders for unified look)
-        ctx.fillStyle = `rgb(${avgColor.r}, ${avgColor.g}, ${avgColor.b})`;
+        // Draw all triangles in this group with thin black gridlines only
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.3)'; // Semi-transparent white for visibility
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)'; // Black gridlines
+        ctx.lineWidth = 1;
         
         for (const tri of groupTriangles) {
             ctx.beginPath();
@@ -153,6 +138,7 @@ function drawMosaicEffect(landmarks) {
             ctx.lineTo(tri.x3, tri.y3);
             ctx.closePath();
             ctx.fill();
+            ctx.stroke();
             
             trianglesDrawn++;
         }
