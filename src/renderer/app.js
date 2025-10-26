@@ -2,19 +2,18 @@ const video = document.getElementById('webcam');
 const canvas = document.getElementById('output');
 const ctx = canvas.getContext('2d');
 
-// NEW APPROACH: Use actual 3D face mesh with triangle tesselation
-// MediaPipe provides 468 landmarks that form a 3D mesh via triangles
-// We'll group triangles into regions and fill each region with avg color
+// CORRECT APPROACH: Use MediaPipe's actual triangle tessellation
+// FACEMESH_TESSELATION provides the triangle connections
+// "Temperature" controls how many adjacent triangles to merge
 
-// Mosaic settings - number of "regions" to group triangles into
-const MOSAIC_REGIONS = 20;  // ~20 large blocks across the face
+// Mosaic settings
+let TRIANGLE_SKIP = 3;  // Draw every Nth triangle (1=all triangles, 3=every 3rd, etc)
+                         // Higher value = fewer, larger blocks
 
 // Debug flags
 const DEBUG = {
-    showFaceMesh: false,     // Show face mesh points
-    showTriangles: true,     // Show triangle edges
-    logColors: false,        // Log color calculations
-    logFaceData: true        // Log face detection data
+    showTriangleEdges: true,  // Show triangle borders
+    logStats: true            // Log statistics every 30 frames
 };
 
 let faceMesh;
