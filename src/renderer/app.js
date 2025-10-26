@@ -6,7 +6,8 @@ const video = document.getElementById('webcam');
 const canvas = document.getElementById('output');
 const gl = canvas.getContext('webgl', { 
     premultipliedAlpha: false,
-    antialias: false 
+    antialias: false,
+    depth: true
 });
 
 if (!gl) {
@@ -20,6 +21,9 @@ const CANON_SIZE = 512;      // Canonical UV texture size (stays square)
 // How many chunky blocks across and down the face
 const TILES_U = 12;
 const TILES_V = 16;
+
+// Face mesh scale - extend downward to cover chin
+const FACE_SCALE_Y_DOWN = 1.1;  // 8% extension downward for chin coverage
 
 let faceLandmarker;
 let webcamRunning = false;
@@ -230,55 +234,90 @@ function renderPixelatedFace(landmarks) {
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, canvas.width, canvas.height);
     
+    // Enable depth test for proper occlusion
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LEQUAL);
+    gl.clear(gl.DEPTH_BUFFER_BIT);
+    
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     
     renderFaceMesh(programPassB, landmarks, TRI, texCanon, false);
     
     gl.disable(gl.BLEND);
+    gl.disable(gl.DEPTH_TEST);
 }
 
 // Render face mesh with specified shader program
 function renderFaceMesh(program, landmarks, triIndexBuffer, texture, isPassA) {
     gl.useProgram(program);
     
-    // Build vertex data directly from triangle indices
-    // Each vertex: [sx, sy, u, v] (4 floats)
-    const verts = new Float32Array(triIndexBuffer.length * 4);
+    const W = canvas.width, H = canvas.height;
+    
+    // Compute face center for scaling
+    let centerX = 0, centerY = 0;
+    for (let i = 0; i < 468; i++) {
+        centerX += landmarks[i].x;
+        centerY += landmarks[i].y;
+    }
+    centerX = (centerX / 468) * W;
+    centerY = (centerY / 468) * H;
+    
+    // Compute z range this frame (MediaPipe: negative toward camera)
+    let zmin = 1e9, zmax = -1e9;
+    for (let i = 0; i < 468; i++) {
+        const z = landmarks[i].z;
+        if (z < zmin) zmin = z;
+        if (z > zmax) zmax = z;
+    }
+    const zEps = 1e-6;
+    
+    // Build vertex data: [sx, sy, szNDC, u, v] (5 floats)
+    const VERTS = new Float32Array(triIndexBuffer.length * 5);
     
     for (let t = 0; t < triIndexBuffer.length; t++) {
         const i = triIndexBuffer[t];
         const lm = landmarks[i];
         
-        // Screen position in pixels
-        const sx = lm.x * canvas.width;
-        const sy = lm.y * canvas.height;
+        // Extend only downward (chin area), keep X and top Y unchanged
+        let sx = lm.x * W;
+        let sy = lm.y * H;
         
-        // Canonical UV coordinates
+        // Only scale Y downward (below center)
+        if (sy > centerY) {
+            sy = centerY + (sy - centerY) * FACE_SCALE_Y_DOWN;
+        }
+        
+        // Normalize z to NDC [-1..1] so near (more negative) is closer
+        const znorm = (lm.z - zmax) / ((zmin - zmax) + zEps); // 0..1 with 1 = nearest
+        const szNDC = -1.0 + 2.0 * (1.0 - znorm);             // map so nearer → smaller z
+        
         const u = canonicalUVs[i * 2 + 0];
         const v = canonicalUVs[i * 2 + 1];
         
-        const o = t * 4;
-        verts[o + 0] = sx;
-        verts[o + 1] = sy;
-        verts[o + 2] = u;
-        verts[o + 3] = v;
+        const o = t * 5;
+        VERTS[o + 0] = sx;
+        VERTS[o + 1] = sy;
+        VERTS[o + 2] = szNDC;
+        VERTS[o + 3] = u;
+        VERTS[o + 4] = v;
     }
     
     // Create and bind vertex buffer
     const vbo = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
-    gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW);
+    gl.bufferData(gl.ARRAY_BUFFER, VERTS, gl.DYNAMIC_DRAW);
     
     // Set attributes
-    const aScreenPos = gl.getAttribLocation(program, 'aScreenPos');
+    const aScreenPos = gl.getAttribLocation(program, 'aScreenPos'); // now vec3
     const aCanonUV = gl.getAttribLocation(program, 'aCanonUV');
     
     gl.enableVertexAttribArray(aScreenPos);
     gl.enableVertexAttribArray(aCanonUV);
     
-    gl.vertexAttribPointer(aScreenPos, 2, gl.FLOAT, false, 16, 0);
-    gl.vertexAttribPointer(aCanonUV, 2, gl.FLOAT, false, 16, 8);
+    const stride = 20; // 5 floats * 4 bytes
+    gl.vertexAttribPointer(aScreenPos, 3, gl.FLOAT, false, stride, 0);
+    gl.vertexAttribPointer(aCanonUV, 2, gl.FLOAT, false, stride, 12);
     
     // Set uniforms
     gl.uniform2f(gl.getUniformLocation(program, 'uCanvasSize'), canvas.width, canvas.height);
@@ -331,14 +370,14 @@ function drawFullscreenQuad(program, texture, width, height) {
 // PASS A: Unwrap camera to canonical UV
 const vertexShaderPassA = `
 attribute vec2 aCanonUV;
-attribute vec2 aScreenPos;
+attribute vec3 aScreenPos;
 uniform vec2 uCanvasSize;
 varying vec2 vScreenUV;
 
 void main() {
     vec2 posNDC = aCanonUV * 2.0 - 1.0;
     gl_Position = vec4(posNDC, 0.0, 1.0);
-    vScreenUV = aScreenPos / uCanvasSize;
+    vScreenUV = aScreenPos.xy / uCanvasSize;
 }
 `;
 
@@ -355,15 +394,15 @@ void main() {
 
 // PASS B: Rewrap canonical UV to screen
 const vertexShaderPassB = `
-attribute vec2 aScreenPos;
+attribute vec3 aScreenPos;   // x,y in pixels, z already normalized to NDC
 attribute vec2 aCanonUV;
 uniform vec2 uCanvasSize;
 varying vec2 vCanonUV;
 
 void main() {
-    vec2 posNDC = (aScreenPos / uCanvasSize) * 2.0 - 1.0;
-    posNDC.y = -posNDC.y; // Geometry flip (pixel space → NDC space)
-    gl_Position = vec4(posNDC, 0.0, 1.0);
+    vec2 posNDC_xy = (aScreenPos.xy / uCanvasSize) * 2.0 - 1.0;
+    posNDC_xy.y = -posNDC_xy.y;      // geometry flip
+    gl_Position = vec4(posNDC_xy, aScreenPos.z, 1.0);
     vCanonUV = aCanonUV;
 }
 `;
