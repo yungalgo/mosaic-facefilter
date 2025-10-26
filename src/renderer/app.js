@@ -9,7 +9,6 @@ const ctx = canvas.getContext('2d');
 let faceLandmarker;
 let webcamRunning = false;
 let lastVideoTime = -1;
-let TRIANGLE_SKIP = 3; // Temperature control
 
 // Initialize FaceLandmarker
 async function createFaceLandmarker() {
@@ -93,8 +92,8 @@ function drawMosaicEffect(landmarks) {
     
     let trianglesDrawn = 0;
     
-    // Draw every Nth triangle based on temperature
-    for (let i = 0; i < tessellation.length; i += TRIANGLE_SKIP) {
+    // Draw all triangles
+    for (let i = 0; i < tessellation.length; i++) {
         const connection = tessellation[i];
         const startIdx = connection.start;
         const endIdx = connection.end;
@@ -162,24 +161,9 @@ function getTriangleColor(x1, y1, x2, y2, x3, y3, imageData) {
     };
 }
 
-// Setup temperature slider
-function setupTemperatureControl() {
-    const slider = document.getElementById('temperature');
-    const valueDisplay = document.getElementById('tempValue');
-    
-    if (slider && valueDisplay) {
-        slider.addEventListener('input', (e) => {
-            TRIANGLE_SKIP = parseInt(e.target.value);
-            valueDisplay.textContent = TRIANGLE_SKIP;
-            console.log(`🎛️  Temperature: ${TRIANGLE_SKIP}`);
-        });
-    }
-}
-
 // Initialize everything
 async function init() {
     console.log('🚀 Starting Mosaic Face Filter...');
-    setupTemperatureControl();
     await createFaceLandmarker();
     await startCamera();
 }
