@@ -92,14 +92,10 @@ function drawMosaicEffect(landmarks) {
     
     let trianglesDrawn = 0;
     
-    // Draw all triangles
-    for (let i = 0; i < tessellation.length; i++) {
-        const connection = tessellation[i];
-        const startIdx = connection.start;
-        const endIdx = connection.end;
-        
+    // Draw triangles (skip every 3 connections for performance and better look)
+    for (let i = 0; i < tessellation.length; i += 3) {
         // We need to form triangles from the edges
-        // For now, let's use a simple approach: every 3 connections form a rough triangle
+        // Every 3 connections form a rough triangle
         if (i + 2 >= tessellation.length) break;
         
         const conn1 = tessellation[i];
