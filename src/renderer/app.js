@@ -74,6 +74,10 @@ async function processFrame() {
 function onResults(results) {
     frameCount++;
     
+    // Clear canvas with black background
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    
     // Draw video frame first
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     
@@ -149,7 +153,7 @@ function applyMosaicToFace(landmarks) {
         // Calculate average color for this triangle
         const avgColor = getTriangleAverageColor(p1, p2, p3, imageData);
         
-        // Draw filled triangle
+        // Draw filled triangle with average color
         ctx.fillStyle = `rgb(${avgColor.r}, ${avgColor.g}, ${avgColor.b})`;
         ctx.beginPath();
         ctx.moveTo(p1.x, p1.y);
@@ -158,14 +162,19 @@ function applyMosaicToFace(landmarks) {
         ctx.closePath();
         ctx.fill();
         
-        // Draw triangle edges for mosaic effect
+        // Draw thick black edges for clear mosaic blocks
         if (DEBUG.showTriangleEdges) {
-            ctx.strokeStyle = 'rgba(0, 0, 0, 0.4)';
-            ctx.lineWidth = 1.5;
+            ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)';
+            ctx.lineWidth = 2;
             ctx.stroke();
         }
         
         trianglesDrawn++;
+        
+        // Debug: Draw first few triangles in bright color to verify they're rendering
+        if (DEBUG.logStats && frameCount % 30 === 0 && trianglesDrawn <= 3) {
+            console.log(`🎨 Triangle ${trianglesDrawn}: color=rgb(${avgColor.r},${avgColor.g},${avgColor.b}), vertices=[${Math.floor(p1.x)},${Math.floor(p1.y)}], [${Math.floor(p2.x)},${Math.floor(p2.y)}], [${Math.floor(p3.x)},${Math.floor(p3.y)}]`);
+        }
     }
     
     if (DEBUG.logStats && frameCount % 30 === 0) {
