@@ -1,7 +1,7 @@
 {
   "name": "mosaic-facefilter",
   "version": "1.0.0",
-  "description": "OS mosaic face filter - real-time minecraft-style face pixelation for streaming",
+  "description": "mosaic-facefilter: real-time stylized face pixelation for streaming",
   "main": "src/main.js",
   "scripts": {
     "install": "npm install",
@@ -26,18 +26,19 @@
   },
   "build": {
     "appId": "com.yungalgorithm.mosaic-facefilter",
-    "productName": "OS mosaic face filter | made by @yungalgorithm",
+    "productName": "mosaic-facefilter | made by @yungalgorithm",
     "mac": {
       "category": "public.app-category.video",
       "target": ["dmg"],
-      "icon": "build/icon.icns"
+      "icon": "assets/icon.png"
     },
     "win": {
       "target": ["nsis"],
-      "icon": "build/icon.ico"
+      "icon": "assets/icon.png"
     },
     "files": [
       "src/**/*",
+      "assets/**/*",
       "package.json"
     ]
   }

@@ -20,10 +20,10 @@ const CANON_SIZE = 512;      // Canonical UV texture size (stays square)
 
 // How many chunky blocks across and down the face
 const TILES_U = 12;
-const TILES_V = 16;
+const TILES_V = 14;
 
 // Face mesh scale - extend downward to cover chin
-const FACE_SCALE_Y_DOWN = 1.1;  // 8% extension downward for chin coverage
+const FACE_SCALE_Y_DOWN = 1.1;  // 10% extension downward for chin coverage
 
 let faceLandmarker;
 let webcamRunning = false;

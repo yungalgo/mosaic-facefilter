@@ -6,6 +6,7 @@ function createWindow() {
     width: 640,
     height: 480,
     alwaysOnTop: false,  // Normal window behavior
+    icon: path.join(__dirname, '../assets/icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -14,9 +15,6 @@ function createWindow() {
   });
 
   win.loadFile('src/renderer/index.html');
-  
-  // Open dev tools for debugging
-  win.webContents.openDevTools();
 }
 
 app.whenReady().then(createWindow);

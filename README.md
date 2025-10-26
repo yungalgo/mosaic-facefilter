@@ -1,6 +1,8 @@
-# OS mosaic face filter
+# mosaic-facefilter
 
 real-time stylized face pixelation for streaming and recording. keeps your identity anonymous while tracking facial motion.
+
+![demo](assets/demo.png)
 
 **made by [@yungalgorithm](https://github.com/yungalgo)**
 
@@ -15,7 +17,9 @@ saw someone using this filter on instagram and couldn't find it anywhere, so i j
 - runs at 60fps with GPU acceleration
 - works with OBS for streaming
 
-## how to use
+## quick start
+
+**just want to use it?**
 
 ### mac
 
@@ -35,17 +39,30 @@ npm install
 npm start
 ```
 
-that's it. the app will open and ask for camera permissions.
+the app opens, asks for camera permissions, and you're done.
 
-## build standalone app
+---
+
+**want a standalone app you can double-click?**
+
+build it once:
 
 ```bash
-# mac
+# mac - creates a .dmg installer
 npm run build:mac
 
-# windows
+# windows - creates a .exe installer
 npm run build:win
 ```
+
+then just distribute/install the built app. no terminal needed after that.
+
+## stack
+
+- **electron** - desktop app framework, gives us a browser window with camera access
+- **mediapipe tasks-vision** - google's face tracking library, finds 468 facial landmark points
+- **webgl** - GPU shaders for the pixelation effect, renders at 60fps
+- **custom UV pipeline** - unwraps your face to a flat texture, pixelates it, then wraps it back with depth testing
 
 ## tweak the settings
 
@@ -53,7 +70,7 @@ edit `src/renderer/app.js`:
 
 ```javascript
 const TILES_U = 12;   // fewer = bigger blocks
-const TILES_V = 16;
+const TILES_V = 14;
 const FACE_SCALE_Y_DOWN = 1.1;  // how much to extend down (chin coverage)
 ```
 
@@ -68,13 +85,6 @@ two-tier detection: fast bbox pixelation kicks in immediately, then switches to 
 **camera not working?** check system privacy settings  
 **app won't start?** run `npm run reinstall`  
 **laggy?** lower the TILES values
-
-## tech
-
-- electron
-- webgl 
-- mediapipe facemesh
-- custom UV-mapped shader pipeline
 
 ---
 
