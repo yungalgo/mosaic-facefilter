@@ -150,11 +150,11 @@ function applyMosaicToFace(landmarks) {
         const p2 = getLandmarkPixel(landmarks[idx2]);
         const p3 = getLandmarkPixel(landmarks[idx3]);
         
-        // Calculate average color for this triangle
-        const avgColor = getTriangleAverageColor(p1, p2, p3, imageData);
+        // SIMPLE TEST: Draw BRIGHT COLORED triangles to verify rendering works
+        // Use different colors for different triangles
+        const colors = ['#FF0000', '#00FF00', '#0000FF', '#FFFF00', '#FF00FF', '#00FFFF'];
+        ctx.fillStyle = colors[trianglesDrawn % colors.length];
         
-        // Draw filled triangle with average color
-        ctx.fillStyle = `rgb(${avgColor.r}, ${avgColor.g}, ${avgColor.b})`;
         ctx.beginPath();
         ctx.moveTo(p1.x, p1.y);
         ctx.lineTo(p2.x, p2.y);
@@ -162,12 +162,10 @@ function applyMosaicToFace(landmarks) {
         ctx.closePath();
         ctx.fill();
         
-        // Draw thick black edges for clear mosaic blocks
-        if (DEBUG.showTriangleEdges) {
-            ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)';
-            ctx.lineWidth = 2;
-            ctx.stroke();
-        }
+        // Draw thick black edges 
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 3;
+        ctx.stroke();
         
         trianglesDrawn++;
         
