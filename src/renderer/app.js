@@ -106,30 +106,16 @@ function applyMosaicToFace(landmarks) {
     // Get image data BEFORE drawing mosaic
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     
-    // Get the triangle tessellation from MediaPipe
-    // Try multiple possible sources for the tessellation data
-    let tessellation = null;
-    
-    if (typeof FACEMESH_TESSELATION !== 'undefined') {
-        tessellation = FACEMESH_TESSELATION;
-    } else if (typeof window.FACEMESH_TESSELATION !== 'undefined') {
-        tessellation = window.FACEMESH_TESSELATION;
-    } else {
-        tessellation = getDefaultTessellation();
-    }
+    // Get the triangle tessellation
+    // MediaPipe's FACEMESH_TESSELATION is an array of EDGES (pairs), not triangles
+    // We need our own triangle data
+    let tessellation = getDefaultTessellation();
     
     if (DEBUG.logStats && frameCount % 30 === 0) {
-        console.log(`\n🔍 Tessellation type: ${typeof tessellation}, isArray: ${Array.isArray(tessellation)}`);
-        console.log(`🔍 Tessellation sample:`, tessellation.slice ? tessellation.slice(0, 9) : 'Not sliceable');
-        console.log(`🎨 Total triangles available: ${tessellation.length / 3}`);
+        console.log(`\n🎨 Using built-in tessellation: ${tessellation.length / 3} triangles`);
         console.log(`🎯 Drawing every ${TRIANGLE_SKIP} triangles (temperature control)`);
         console.log(`📊 Landmarks available: ${landmarks.length}`);
-        
-        // Debug first few indices
-        if (tessellation.length > 0) {
-            console.log(`🔍 First triangle indices: [${tessellation[0]}, ${tessellation[1]}, ${tessellation[2]}]`);
-            console.log(`🔍 Landmark check: [${!!landmarks[tessellation[0]]}, ${!!landmarks[tessellation[1]]}, ${!!landmarks[tessellation[2]]}]`);
-        }
+        console.log(`🔍 First triangle: [${tessellation[0]}, ${tessellation[1]}, ${tessellation[2]}]`);
     }
     
     let trianglesDrawn = 0;
@@ -141,13 +127,13 @@ function applyMosaicToFace(landmarks) {
         const idx2 = tessellation[i + 1];
         const idx3 = tessellation[i + 2];
         
-        // Debug first iteration
-        if (DEBUG.logStats && frameCount % 30 === 0 && i === 0) {
-            console.log(`🔍 Loop iteration 0: indices=[${idx1}, ${idx2}, ${idx3}]`);
-            console.log(`🔍 Landmark exists: [${!!landmarks[idx1]}, ${!!landmarks[idx2]}, ${!!landmarks[idx3]}]`);
-            if (landmarks[idx1]) {
-                console.log(`🔍 First landmark value:`, landmarks[idx1]);
+        // Validate indices are within bounds
+        if (idx1 >= landmarks.length || idx2 >= landmarks.length || idx3 >= landmarks.length) {
+            skippedCount++;
+            if (DEBUG.logStats && frameCount % 30 === 0 && skippedCount <= 3) {
+                console.warn(`⚠️  Triangle ${i/3} has out-of-bounds indices: [${idx1}, ${idx2}, ${idx3}], max=${landmarks.length-1}`);
             }
+            continue;
         }
         
         if (!landmarks[idx1] || !landmarks[idx2] || !landmarks[idx3]) {
@@ -183,8 +169,10 @@ function applyMosaicToFace(landmarks) {
     }
     
     if (DEBUG.logStats && frameCount % 30 === 0) {
-        console.log(`✅ Triangles drawn: ${trianglesDrawn}`);
-        console.log(`⚠️  Triangles skipped (invalid indices): ${skippedCount}`);
+        console.log(`✅ Triangles drawn: ${trianglesDrawn} (temperature skip=${TRIANGLE_SKIP})`);
+        if (skippedCount > 0) {
+            console.warn(`⚠️  Triangles skipped: ${skippedCount} (out of bounds or invalid)`);
+        }
     }
 }
 
