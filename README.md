@@ -1,6 +1,6 @@
-# OS mosica face filter
+# OS mosaic face filter
 
-real-time minecraft-style face pixelation for streaming. keeps your face anonymous while you move around.
+real-time stylized face pixelation for streaming. keeps your face anonymous while you move around.
 
 **made by [@yungalgorithm](https://github.com/yungalgo)**
 

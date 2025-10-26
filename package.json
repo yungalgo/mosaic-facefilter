@@ -1,7 +1,7 @@
 {
   "name": "mosaic-facefilter",
   "version": "1.0.0",
-  "description": "OS mosica face filter - real-time minecraft-style face pixelation for streaming",
+  "description": "OS mosaic face filter - real-time minecraft-style face pixelation for streaming",
   "main": "src/main.js",
   "scripts": {
     "install": "npm install",
