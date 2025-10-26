@@ -15,9 +15,11 @@ if (!gl) {
 }
 
 // Configuration
-const CANON_SIZE = 512;      // Canonical UV texture size
-const BLOCK_SIZE = 24;       // Pixel block size (20-30px for Minecraft look)
-const SMALL_SIZE = Math.floor(CANON_SIZE / BLOCK_SIZE); // Downsampled size
+const CANON_SIZE = 512;      // Canonical UV texture size (stays square)
+
+// How many chunky blocks across and down the face
+const TILES_U = 12;
+const TILES_V = 16;
 
 let faceLandmarker;
 let webcamRunning = false;
@@ -32,7 +34,6 @@ let TRI = null; // Will be loaded from triangulation_468.json
 
 // Initialize FaceLandmarker
 async function createFaceLandmarker() {
-    console.log('🚀 Initializing MediaPipe FaceLandmarker...');
     
     const filesetResolver = await FilesetResolver.forVisionTasks(
         "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm"
@@ -47,38 +48,30 @@ async function createFaceLandmarker() {
         numFaces: 1
     });
     
-    console.log('✅ FaceLandmarker ready!');
 }
 
 // Load canonical UV coordinates
 async function loadCanonicalUVs() {
-    console.log('📐 Loading canonical UV coordinates...');
     const response = await fetch('canonical_468_uv.json');
     const uvArray = await response.json();
     canonicalUVs = new Float32Array(uvArray);
     if (canonicalUVs.length !== 468 * 2) {
         throw new Error(`Bad UV length: ${canonicalUVs.length}`);
     }
-    console.log('✅ Canonical UVs loaded');
 }
 
 // Load triangulation indices
 async function loadTriangulation() {
-    console.log('🔺 Loading triangulation...');
     const response = await fetch('triangulation_468.json');
     const triArray = await response.json();
     TRI = new Uint16Array(triArray);
-    console.log(`✅ Triangulation loaded: ${TRI.length / 3} triangles`);
 }
 
 // Initialize WebGL resources
 function initWebGL() {
-    console.log('🎨 Initializing WebGL pipeline...');
     
     // Set texture upload flip (fixes upside-down video)
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-    gl.disable(gl.CULL_FACE);
-    gl.disable(gl.DEPTH_TEST);
     
     // Create shader programs
     programPassA = createProgram(vertexShaderPassA, fragmentShaderPassA);
@@ -87,7 +80,7 @@ function initWebGL() {
     
     // Create framebuffers and textures
     ({ fbo: fboCanon, texture: texCanon } = createFramebuffer(CANON_SIZE, CANON_SIZE));
-    ({ fbo: fboSmall, texture: texSmall } = createFramebuffer(SMALL_SIZE, SMALL_SIZE));
+    ({ fbo: fboSmall, texture: texSmall } = createFramebuffer(TILES_U, TILES_V));
     
     // Create camera texture
     cameraTexture = gl.createTexture();
@@ -97,7 +90,6 @@ function initWebGL() {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     
-    console.log('✅ WebGL initialized');
 }
 
 // Create shader program
@@ -111,7 +103,6 @@ function createProgram(vertexSource, fragmentSource) {
     gl.linkProgram(program);
     
     if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-        console.error('Program link error:', gl.getProgramInfoLog(program));
         return null;
     }
     
@@ -125,7 +116,6 @@ function compileShader(type, source) {
     gl.compileShader(shader);
     
     if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-        console.error('Shader compile error:', gl.getShaderInfoLog(shader));
         return null;
     }
     
@@ -147,7 +137,6 @@ function createFramebuffer(width, height) {
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
     
     if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
-        console.error('Framebuffer incomplete');
     }
     
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -157,7 +146,6 @@ function createFramebuffer(width, height) {
 
 // Start webcam
 async function startCamera() {
-    console.log('📹 Starting camera...');
     
     try {
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -169,13 +157,11 @@ async function startCamera() {
             webcamRunning = true;
             canvas.width = video.videoWidth;
             canvas.height = video.videoHeight;
-            console.log(`✅ Camera ready: ${canvas.width}x${canvas.height}`);
             
             initWebGL();
             predictWebcam();
         });
     } catch (err) {
-        console.error('❌ Camera error:', err);
         alert('Please allow camera access');
     }
 }
@@ -224,23 +210,21 @@ function renderPixelatedFace(landmarks) {
     
     renderFaceMesh(programPassA, landmarks, TRI, cameraTexture, true);
     
-    // PIXELATION: Downsample
+    // PIXELATION: Downsample canonical to tile grid size
     gl.bindFramebuffer(gl.FRAMEBUFFER, fboSmall);
-    gl.viewport(0, 0, SMALL_SIZE, SMALL_SIZE);
+    gl.viewport(0, 0, TILES_U, TILES_V);
     gl.clear(gl.COLOR_BUFFER_BIT);
-    drawFullscreenQuad(programBlit, texCanon, SMALL_SIZE, SMALL_SIZE);
+    drawFullscreenQuad(programBlit, texCanon, TILES_U, TILES_V);
     
-    // PIXELATION: Upsample with NEAREST filter (creates blocks)
+    // PIXELATION: Upsample back with NEAREST to get chunky pixels
     gl.bindTexture(gl.TEXTURE_2D, texSmall);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     
     gl.bindFramebuffer(gl.FRAMEBUFFER, fboCanon);
     gl.viewport(0, 0, CANON_SIZE, CANON_SIZE);
     gl.clear(gl.COLOR_BUFFER_BIT);
     drawFullscreenQuad(programBlit, texSmall, CANON_SIZE, CANON_SIZE);
-    
-    // Reset to LINEAR
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     
     // PASS B: Rewrap canonical UV to screen space
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -418,7 +402,6 @@ void main() {
 
 // Initialize everything
 async function init() {
-    console.log('🚀 Starting Mosaic Face Filter (WebGL UV Pipeline)...');
     await createFaceLandmarker();
     await loadCanonicalUVs();
     await loadTriangulation();
