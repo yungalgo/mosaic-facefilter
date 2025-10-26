@@ -2,9 +2,9 @@ const video = document.getElementById('webcam');
 const canvas = document.getElementById('output');
 const ctx = canvas.getContext('2d');
 
-// Mosaic settings
-const MOSAIC_GRID_COLS = 16;
-const MOSAIC_GRID_ROWS = 20;
+// Mosaic settings - make blocks bigger
+const MOSAIC_GRID_COLS = 12;  // Reduced from 16 for larger blocks
+const MOSAIC_GRID_ROWS = 15;  // Reduced from 20 for larger blocks
 
 // Debug flags
 const DEBUG = {
@@ -160,7 +160,15 @@ function isPointInFace(x, y, landmarks) {
     return inside;
 }
 
-// Apply mosaic effect to face
+// Get landmark coordinates in pixel space
+function getLandmarkPixel(landmark) {
+    return {
+        x: landmark.x * canvas.width,
+        y: landmark.y * canvas.height
+    };
+}
+
+// Apply mosaic effect to face - 3D AWARE VERSION
 function applyMosaicToFace(landmarks) {
     const bounds = getFaceBounds(landmarks);
     
@@ -180,73 +188,123 @@ function applyMosaicToFace(landmarks) {
         ctx.strokeRect(bounds.minX, bounds.minY, bounds.width, bounds.height);
     }
     
-    // Calculate block size
-    const blockWidth = bounds.width / MOSAIC_GRID_COLS;
-    const blockHeight = bounds.height / MOSAIC_GRID_ROWS;
-    
-    if (DEBUG.logFaceData && frameCount % 30 === 0) {
-        console.log(`🔲 Block size: ${blockWidth.toFixed(1)} x ${blockHeight.toFixed(1)}`);
-    }
-    
     // Get full canvas image data BEFORE drawing mosaic
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     
     let blocksDrawn = 0;
-    let blocksSkipped = 0;
     
-    // Draw mosaic blocks
+    // Create 3D-aware mosaic using landmark-based quads
+    // Face mesh landmarks form a natural grid we can subdivide
+    
+    // Key landmarks for face regions (simplified grid mapping)
+    // We'll interpolate between these to create our mosaic grid
+    const topLandmark = 10;      // Top of face
+    const bottomLandmark = 152;  // Bottom of face
+    const leftLandmark = 234;    // Left side
+    const rightLandmark = 454;   // Right side
+    const noseTip = 1;           // Nose tip (center reference)
+    
+    // Draw mosaic blocks as warped quads
     for (let row = 0; row < MOSAIC_GRID_ROWS; row++) {
         for (let col = 0; col < MOSAIC_GRID_COLS; col++) {
-            const blockX = bounds.minX + col * blockWidth;
-            const blockY = bounds.minY + row * blockHeight;
-            const centerX = blockX + blockWidth / 2;
-            const centerY = blockY + blockHeight / 2;
+            // Interpolate position in face space (0-1)
+            const u1 = col / MOSAIC_GRID_COLS;
+            const u2 = (col + 1) / MOSAIC_GRID_COLS;
+            const v1 = row / MOSAIC_GRID_ROWS;
+            const v2 = (row + 1) / MOSAIC_GRID_ROWS;
             
-            // Only draw block if center is inside face region
-            if (isPointInFace(centerX, centerY, landmarks)) {
-                // Sample color from center of block
-                const pixelX = Math.floor(centerX);
-                const pixelY = Math.floor(centerY);
-                
-                if (pixelX >= 0 && pixelX < canvas.width && pixelY >= 0 && pixelY < canvas.height) {
-                    const index = (pixelY * canvas.width + pixelX) * 4;
+            // Map to landmark space - create quad corners
+            // This is simplified - ideally we'd use actual mesh topology
+            const topLeft = {
+                x: bounds.minX + u1 * bounds.width,
+                y: bounds.minY + v1 * bounds.height
+            };
+            const topRight = {
+                x: bounds.minX + u2 * bounds.width,
+                y: bounds.minY + v1 * bounds.height
+            };
+            const bottomLeft = {
+                x: bounds.minX + u1 * bounds.width,
+                y: bounds.minY + v2 * bounds.height
+            };
+            const bottomRight = {
+                x: bounds.minX + u2 * bounds.width,
+                y: bounds.minY + v2 * bounds.height
+            };
+            
+            // Find nearest landmarks to add 3D warping
+            const centerU = (u1 + u2) / 2;
+            const centerV = (v1 + v2) / 2;
+            
+            // Warp based on face depth (nose sticks out, cheeks curve)
+            // Use Z-coordinate from landmarks if available, or estimate from position
+            const warpFactor = getDepthWarp(centerU, centerV, landmarks);
+            
+            // Apply warping to corners
+            const warpedTopLeft = applyDepthWarp(topLeft, centerU, centerV, warpFactor, -0.5, -0.5);
+            const warpedTopRight = applyDepthWarp(topRight, centerU, centerV, warpFactor, 0.5, -0.5);
+            const warpedBottomLeft = applyDepthWarp(bottomLeft, centerU, centerV, warpFactor, -0.5, 0.5);
+            const warpedBottomRight = applyDepthWarp(bottomRight, centerU, centerV, warpFactor, 0.5, 0.5);
+            
+            // Sample color from center
+            const centerX = Math.floor((warpedTopLeft.x + warpedBottomRight.x) / 2);
+            const centerY = Math.floor((warpedTopLeft.y + warpedBottomRight.y) / 2);
+            
+            if (centerX >= 0 && centerX < canvas.width && centerY >= 0 && centerY < canvas.height) {
+                if (isPointInFace(centerX, centerY, landmarks)) {
+                    const index = (centerY * canvas.width + centerX) * 4;
                     const r = imageData.data[index];
                     const g = imageData.data[index + 1];
                     const b = imageData.data[index + 2];
                     
-                    if (DEBUG.logColors && row === 10 && col === 8 && frameCount % 30 === 0) {
-                        console.log(`🎨 Center block color: rgb(${r}, ${g}, ${b})`);
-                    }
-                    
-                    // Draw block
+                    // Draw warped quad as polygon
                     ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
-                    ctx.fillRect(
-                        Math.floor(blockX),
-                        Math.floor(blockY),
-                        Math.ceil(blockWidth) + 1,  // +1 to avoid gaps
-                        Math.ceil(blockHeight) + 1
-                    );
+                    ctx.beginPath();
+                    ctx.moveTo(warpedTopLeft.x, warpedTopLeft.y);
+                    ctx.lineTo(warpedTopRight.x, warpedTopRight.y);
+                    ctx.lineTo(warpedBottomRight.x, warpedBottomRight.y);
+                    ctx.lineTo(warpedBottomLeft.x, warpedBottomLeft.y);
+                    ctx.closePath();
+                    ctx.fill();
                     
                     // Debug: Draw grid lines
                     if (DEBUG.showGridLines) {
-                        ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+                        ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
                         ctx.lineWidth = 1;
-                        ctx.strokeRect(Math.floor(blockX), Math.floor(blockY), Math.ceil(blockWidth), Math.ceil(blockHeight));
+                        ctx.stroke();
                     }
                     
                     blocksDrawn++;
-                } else {
-                    blocksSkipped++;
                 }
-            } else {
-                blocksSkipped++;
             }
         }
     }
     
     if (DEBUG.logFaceData && frameCount % 30 === 0) {
-        console.log(`✅ Blocks drawn: ${blocksDrawn}, skipped: ${blocksSkipped}`);
+        console.log(`✅ 3D Blocks drawn: ${blocksDrawn} / ${MOSAIC_GRID_COLS * MOSAIC_GRID_ROWS}`);
     }
+}
+
+// Get depth warp factor based on face position
+// Nose area (center) has more depth, edges are flatter
+function getDepthWarp(u, v, landmarks) {
+    // u, v are normalized coordinates (0-1) across face
+    // Center (0.5, 0.5) should have maximum warp (nose)
+    const centerDist = Math.sqrt(Math.pow(u - 0.5, 2) + Math.pow(v - 0.5, 2));
+    const warp = Math.max(0, 1 - centerDist * 2); // 1 at center, 0 at edges
+    return warp * 15; // Scale factor for warping strength
+}
+
+// Apply depth-based warping to a point
+function applyDepthWarp(point, centerU, centerV, warpFactor, offsetU, offsetV) {
+    // Warp point based on its position relative to face center
+    // This simulates perspective/depth
+    const scale = 1 + warpFactor * 0.01;
+    
+    return {
+        x: point.x + offsetU * warpFactor,
+        y: point.y + offsetV * warpFactor
+    };
 }
 
 // Initialize

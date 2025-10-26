@@ -14,6 +14,9 @@ function createWindow() {
   });
 
   win.loadFile('src/renderer/index.html');
+  
+  // Open dev tools for debugging
+  win.webContents.openDevTools();
 }
 
 app.whenReady().then(createWindow);
