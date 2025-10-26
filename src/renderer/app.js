@@ -91,53 +91,80 @@ function drawMosaicEffect(landmarks) {
     const tessellation = FaceLandmarker.FACE_LANDMARKS_TESSELATION;
     
     let trianglesDrawn = 0;
+    let blocksDrawn = 0;
     
-    // Draw triangles (skip every 3 connections for performance and better look)
-    for (let i = 0; i < tessellation.length; i += 3) {
-        // We need to form triangles from the edges
-        // Every 3 connections form a rough triangle
-        if (i + 2 >= tessellation.length) break;
+    // GROUP_SIZE: Number of consecutive triangles to merge into one block
+    const GROUP_SIZE = 9; // Merge 9 triangles = larger blocks
+    
+    // Process triangles in groups - all triangles in a group get the same color
+    for (let groupStart = 0; groupStart < tessellation.length; groupStart += GROUP_SIZE * 3) {
+        // Calculate average color for entire group
+        let totalR = 0, totalG = 0, totalB = 0;
+        let colorSamples = 0;
+        let groupTriangles = [];
         
-        const conn1 = tessellation[i];
-        const conn2 = tessellation[i + 1];
-        const conn3 = tessellation[i + 2];
+        // Collect all triangles in this group and sample their colors
+        for (let i = groupStart; i < groupStart + (GROUP_SIZE * 3) && i + 2 < tessellation.length; i += 3) {
+            const conn1 = tessellation[i];
+            const conn2 = tessellation[i + 1];
+            const conn3 = tessellation[i + 2];
+            
+            const p1 = landmarks[conn1.start];
+            const p2 = landmarks[conn1.end];
+            const p3 = landmarks[conn2.end];
+            
+            if (!p1 || !p2 || !p3) continue;
+            
+            // Convert normalized coordinates to canvas pixels
+            const x1 = p1.x * canvas.width;
+            const y1 = p1.y * canvas.height;
+            const x2 = p2.x * canvas.width;
+            const y2 = p2.y * canvas.height;
+            const x3 = p3.x * canvas.width;
+            const y3 = p3.y * canvas.height;
+            
+            groupTriangles.push({ x1, y1, x2, y2, x3, y3 });
+            
+            // Sample color from this triangle's center
+            const color = getTriangleColor(x1, y1, x2, y2, x3, y3, imageData);
+            totalR += color.r;
+            totalG += color.g;
+            totalB += color.b;
+            colorSamples++;
+        }
         
-        // Get landmark points
-        const p1 = landmarks[conn1.start];
-        const p2 = landmarks[conn1.end];
-        const p3 = landmarks[conn2.end];
+        if (colorSamples === 0) continue;
         
-        if (!p1 || !p2 || !p3) continue;
+        // Average color for the entire group
+        const avgColor = {
+            r: Math.floor(totalR / colorSamples),
+            g: Math.floor(totalG / colorSamples),
+            b: Math.floor(totalB / colorSamples)
+        };
         
-        // Convert normalized coordinates to canvas pixels
-        const x1 = p1.x * canvas.width;
-        const y1 = p1.y * canvas.height;
-        const x2 = p2.x * canvas.width;
-        const y2 = p2.y * canvas.height;
-        const x3 = p3.x * canvas.width;
-        const y3 = p3.y * canvas.height;
-        
-        // Calculate average color for this triangle
-        const avgColor = getTriangleColor(x1, y1, x2, y2, x3, y3, imageData);
-        
-        // Draw filled triangle
+        // Draw all triangles in this group with the SAME color
         ctx.fillStyle = `rgb(${avgColor.r}, ${avgColor.g}, ${avgColor.b})`;
-        ctx.beginPath();
-        ctx.moveTo(x1, y1);
-        ctx.lineTo(x2, y2);
-        ctx.lineTo(x3, y3);
-        ctx.closePath();
-        ctx.fill();
         
-        // Thin borders for debugging
-        ctx.strokeStyle = 'rgba(0, 0, 0, 0.2)';
-        ctx.lineWidth = 0.5;
-        ctx.stroke();
+        for (const tri of groupTriangles) {
+            ctx.beginPath();
+            ctx.moveTo(tri.x1, tri.y1);
+            ctx.lineTo(tri.x2, tri.y2);
+            ctx.lineTo(tri.x3, tri.y3);
+            ctx.closePath();
+            ctx.fill();
+            
+            // Thin borders for debugging
+            ctx.strokeStyle = 'rgba(0, 0, 0, 0.2)';
+            ctx.lineWidth = 0.5;
+            ctx.stroke();
+            
+            trianglesDrawn++;
+        }
         
-        trianglesDrawn++;
+        blocksDrawn++;
     }
     
-    console.log(`✅ Drew ${trianglesDrawn} mosaic blocks`);
+    console.log(`✅ Drew ${blocksDrawn} blocks (${trianglesDrawn} triangles)`);
 }
 
 // Get average color for a triangle
