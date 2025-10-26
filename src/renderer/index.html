@@ -10,6 +10,13 @@
     <canvas id="output"></canvas>
     <video id="webcam" autoplay playsinline style="display: none;"></video>
     
+    <!-- Temperature Control Slider -->
+    <div class="controls">
+        <label for="temperature">Block Size (Temperature): <span id="tempValue">3</span></label>
+        <input type="range" id="temperature" min="1" max="20" value="3" step="1">
+        <div class="help">Lower = More detail, Higher = Bigger blocks</div>
+    </div>
+    
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>

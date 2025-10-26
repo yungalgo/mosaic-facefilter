@@ -107,8 +107,16 @@ function applyMosaicToFace(landmarks) {
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     
     // Get the triangle tessellation from MediaPipe
-    // FACEMESH_TESSELATION is an array of triangle connections [vertex1, vertex2, vertex3]
-    const tessellation = FACEMESH_TESSELATION || getDefaultTessellation();
+    // Try multiple possible sources for the tessellation data
+    let tessellation = null;
+    
+    if (typeof FACEMESH_TESSELATION !== 'undefined') {
+        tessellation = FACEMESH_TESSELATION;
+    } else if (typeof window.FACEMESH_TESSELATION !== 'undefined') {
+        tessellation = window.FACEMESH_TESSELATION;
+    } else {
+        tessellation = getDefaultTessellation();
+    }
     
     if (DEBUG.logStats && frameCount % 30 === 0) {
         console.log(`\n🎨 Total triangles available: ${tessellation.length / 3}`);
@@ -123,7 +131,9 @@ function applyMosaicToFace(landmarks) {
         const idx2 = tessellation[i + 1];
         const idx3 = tessellation[i + 2];
         
-        if (!landmarks[idx1] || !landmarks[idx2] || !landmarks[idx3]) continue;
+        if (!landmarks[idx1] || !landmarks[idx2] || !landmarks[idx3]) {
+            continue;
+        }
         
         // Get triangle vertices in pixel coordinates
         const p1 = getLandmarkPixel(landmarks[idx1]);
@@ -202,23 +212,69 @@ function getTriangleAverageColor(p1, p2, p3, imageData) {
 }
 
 // Fallback tessellation if FACEMESH_TESSELATION is not available
-// This creates a simple grid-based triangulation
+// This creates triangles using face contour landmarks
 function getDefaultTessellation() {
-    console.warn('⚠️  FACEMESH_TESSELATION not found, using fallback');
+    console.warn('⚠️  FACEMESH_TESSELATION not found, using simplified fallback');
     const triangles = [];
     
-    // Simple triangulation: connect consecutive landmarks in groups of 3
-    for (let i = 0; i < 465; i += 3) {
-        triangles.push(i, i + 1, i + 2);
-    }
+    // Create triangles from face contour - simplified version
+    // Use key landmarks that form the face shape
+    const faceContour = [
+        10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288,
+        397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136,
+        172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109
+    ];
     
+    // Create fan triangulation from nose tip (landmark 1)
+    const noseTip = 1;
+    for (let i = 0; i < faceContour.length - 1; i++) {
+        triangles.push(noseTip, faceContour[i], faceContour[i + 1]);
+    }
+    // Close the loop
+    triangles.push(noseTip, faceContour[faceContour.length - 1], faceContour[0]);
+    
+    // Add more triangles for eyes, mouth, etc.
+    // Left eye region
+    triangles.push(33, 133, 160);
+    triangles.push(160, 159, 158);
+    triangles.push(158, 157, 173);
+    triangles.push(173, 133, 33);
+    
+    // Right eye region
+    triangles.push(362, 263, 387);
+    triangles.push(387, 386, 385);
+    triangles.push(385, 384, 398);
+    triangles.push(398, 263, 362);
+    
+    // Mouth region
+    triangles.push(61, 185, 40);
+    triangles.push(40, 39, 37);
+    triangles.push(37, 267, 269);
+    triangles.push(269, 270, 409);
+    
+    console.log(`📊 Created ${triangles.length / 3} fallback triangles`);
     return triangles;
+}
+
+// Handle temperature slider
+function setupTemperatureControl() {
+    const slider = document.getElementById('temperature');
+    const valueDisplay = document.getElementById('tempValue');
+    
+    if (slider && valueDisplay) {
+        slider.addEventListener('input', (e) => {
+            TRIANGLE_SKIP = parseInt(e.target.value);
+            valueDisplay.textContent = TRIANGLE_SKIP;
+            console.log(`🎛️  Temperature changed to: ${TRIANGLE_SKIP} (${TRIANGLE_SKIP === 1 ? 'All triangles' : 'Every ' + TRIANGLE_SKIP + ' triangles'})`);
+        });
+    }
 }
 
 // Initialize
 async function init() {
     console.log('🚀 Starting Mosaic Face Filter...');
     console.log('📋 Debug settings:', DEBUG);
+    setupTemperatureControl();
     await initFaceMesh();
     await startCamera();
 }
