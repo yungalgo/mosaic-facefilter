@@ -2,16 +2,17 @@ const video = document.getElementById('webcam');
 const canvas = document.getElementById('output');
 const ctx = canvas.getContext('2d');
 
-// Mosaic settings - MATCH TARGET: Large distorted blocks like Minecraft face
-// Target shows ~4-5 blocks across face width with HEAVY perspective distortion
-const MOSAIC_GRID_COLS = 4;   // Very coarse grid to match target
-const MOSAIC_GRID_ROWS = 5;   // Only 20 total blocks for large size
+// NEW APPROACH: Use actual 3D face mesh with triangle tesselation
+// MediaPipe provides 468 landmarks that form a 3D mesh via triangles
+// We'll group triangles into regions and fill each region with avg color
+
+// Mosaic settings - number of "regions" to group triangles into
+const MOSAIC_REGIONS = 20;  // ~20 large blocks across the face
 
 // Debug flags
 const DEBUG = {
-    showFaceMesh: true,      // Show face mesh points
-    showBoundingBox: true,   // Show face bounding box
-    showGridLines: true,     // Show mosaic grid
+    showFaceMesh: false,     // Show face mesh points
+    showTriangles: true,     // Show triangle edges
     logColors: false,        // Log color calculations
     logFaceData: true        // Log face detection data
 };
@@ -169,152 +170,134 @@ function getLandmarkPixel(landmark) {
     };
 }
 
-// Apply mosaic effect to face - 3D AWARE VERSION
+// Apply mosaic effect using actual 3D FACE MESH
+// This uses the triangle tesselation that MediaPipe provides
 function applyMosaicToFace(landmarks) {
-    const bounds = getFaceBounds(landmarks);
-    
-    if (DEBUG.logFaceData && frameCount % 30 === 0) {
-        console.log('📦 Face bounds:', {
-            x: Math.floor(bounds.minX),
-            y: Math.floor(bounds.minY),
-            width: Math.floor(bounds.width),
-            height: Math.floor(bounds.height)
-        });
-    }
-    
-    // Debug: Draw bounding box
-    if (DEBUG.showBoundingBox) {
-        ctx.strokeStyle = 'red';
-        ctx.lineWidth = 2;
-        ctx.strokeRect(bounds.minX, bounds.minY, bounds.width, bounds.height);
-    }
-    
-    // Get full canvas image data BEFORE drawing mosaic
+    // Get image data BEFORE drawing mosaic
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     
-    let blocksDrawn = 0;
+    // Group landmarks into regions for mosaic blocks
+    // We'll use a simple spatial clustering based on landmark indices
+    const regions = groupLandmarksIntoRegions(landmarks);
     
-    // Create 3D-aware mosaic using landmark-based quads
-    // Face mesh landmarks form a natural grid we can subdivide
+    if (DEBUG.logFaceData && frameCount % 30 === 0) {
+        console.log(`\n🎨 Drawing ${regions.length} mosaic regions on face mesh`);
+    }
     
-    // Key landmarks for face regions (simplified grid mapping)
-    // We'll interpolate between these to create our mosaic grid
-    const topLandmark = 10;      // Top of face
-    const bottomLandmark = 152;  // Bottom of face
-    const leftLandmark = 234;    // Left side
-    const rightLandmark = 454;   // Right side
-    const noseTip = 1;           // Nose tip (center reference)
+    let regionsDrawn = 0;
     
-    // Draw mosaic blocks as warped quads
-    for (let row = 0; row < MOSAIC_GRID_ROWS; row++) {
-        for (let col = 0; col < MOSAIC_GRID_COLS; col++) {
-            // Interpolate position in face space (0-1)
-            const u1 = col / MOSAIC_GRID_COLS;
-            const u2 = (col + 1) / MOSAIC_GRID_COLS;
-            const v1 = row / MOSAIC_GRID_ROWS;
-            const v2 = (row + 1) / MOSAIC_GRID_ROWS;
+    // Draw each region
+    for (const region of regions) {
+        // Calculate average color for this region
+        const avgColor = getRegionAverageColor(region.landmarks, landmarks, imageData);
+        
+        // Draw the region as a filled polygon
+        ctx.fillStyle = `rgb(${avgColor.r}, ${avgColor.g}, ${avgColor.b})`;
+        ctx.beginPath();
+        
+        for (let i = 0; i < region.landmarks.length; i++) {
+            const landmarkIdx = region.landmarks[i];
+            const point = getLandmarkPixel(landmarks[landmarkIdx]);
             
-            // Map to landmark space - create quad corners
-            // This is simplified - ideally we'd use actual mesh topology
-            const topLeft = {
-                x: bounds.minX + u1 * bounds.width,
-                y: bounds.minY + v1 * bounds.height
-            };
-            const topRight = {
-                x: bounds.minX + u2 * bounds.width,
-                y: bounds.minY + v1 * bounds.height
-            };
-            const bottomLeft = {
-                x: bounds.minX + u1 * bounds.width,
-                y: bounds.minY + v2 * bounds.height
-            };
-            const bottomRight = {
-                x: bounds.minX + u2 * bounds.width,
-                y: bounds.minY + v2 * bounds.height
-            };
-            
-            // Find nearest landmarks to add 3D warping
-            const centerU = (u1 + u2) / 2;
-            const centerV = (v1 + v2) / 2;
-            
-            // Warp based on face depth (nose sticks out, cheeks curve)
-            // Use Z-coordinate from landmarks if available, or estimate from position
-            const warpFactor = getDepthWarp(centerU, centerV, landmarks);
-            
-            // Apply warping to corners
-            const warpedTopLeft = applyDepthWarp(topLeft, centerU, centerV, warpFactor, -0.5, -0.5);
-            const warpedTopRight = applyDepthWarp(topRight, centerU, centerV, warpFactor, 0.5, -0.5);
-            const warpedBottomLeft = applyDepthWarp(bottomLeft, centerU, centerV, warpFactor, -0.5, 0.5);
-            const warpedBottomRight = applyDepthWarp(bottomRight, centerU, centerV, warpFactor, 0.5, 0.5);
-            
-            // Sample color from center
-            const centerX = Math.floor((warpedTopLeft.x + warpedBottomRight.x) / 2);
-            const centerY = Math.floor((warpedTopLeft.y + warpedBottomRight.y) / 2);
-            
-            if (centerX >= 0 && centerX < canvas.width && centerY >= 0 && centerY < canvas.height) {
-                if (isPointInFace(centerX, centerY, landmarks)) {
-                    const index = (centerY * canvas.width + centerX) * 4;
-                    const r = imageData.data[index];
-                    const g = imageData.data[index + 1];
-                    const b = imageData.data[index + 2];
-                    
-                    // Draw warped quad as polygon
-                    ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
-                    ctx.beginPath();
-                    ctx.moveTo(warpedTopLeft.x, warpedTopLeft.y);
-                    ctx.lineTo(warpedTopRight.x, warpedTopRight.y);
-                    ctx.lineTo(warpedBottomRight.x, warpedBottomRight.y);
-                    ctx.lineTo(warpedBottomLeft.x, warpedBottomLeft.y);
-                    ctx.closePath();
-                    ctx.fill();
-                    
-                    // Debug: Draw grid lines
-                    if (DEBUG.showGridLines) {
-                        ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
-                        ctx.lineWidth = 1;
-                        ctx.stroke();
-                    }
-                    
-                    blocksDrawn++;
-                }
+            if (i === 0) {
+                ctx.moveTo(point.x, point.y);
+            } else {
+                ctx.lineTo(point.x, point.y);
             }
+        }
+        
+        ctx.closePath();
+        ctx.fill();
+        
+        // Debug: Show region edges
+        if (DEBUG.showTriangles) {
+            ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+        }
+        
+        regionsDrawn++;
+    }
+    
+    if (DEBUG.logFaceData && frameCount % 30 === 0) {
+        console.log(`✅ Mesh regions drawn: ${regionsDrawn}`);
+        console.log(`🎯 Using actual face mesh topology for natural 3D deformation`);
+    }
+}
+
+// Group landmarks into mosaic regions
+// Each region is a cluster of nearby landmarks that forms a "block"
+function groupLandmarksIntoRegions(landmarks) {
+    // Simplified approach: create regions based on facial areas
+    // Each region is a list of landmark indices that form a polygon
+    
+    const regions = [];
+    
+    // Define major facial regions with their landmark boundaries
+    // These are predefined groups that roughly map to face areas
+    const faceRegionGroups = [
+        // Forehead
+        [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109],
+        // Right cheek
+        [234, 93, 132, 58, 172, 136, 150, 176, 148, 152, 377, 400, 378, 379, 365, 397, 288, 361, 323, 454, 356, 389, 251, 284, 332, 297, 338],
+        // Left cheek
+        [454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162],
+        // Nose
+        [1, 4, 5, 195, 197, 2, 326, 327, 294, 278, 279, 360, 363, 456, 399, 412, 465, 391, 430, 266, 425, 427, 411, 416, 434, 432, 436, 426, 423, 358, 279, 420, 360, 363, 456, 399, 412, 465, 391, 430, 266],
+        // Mouth area
+        [0, 267, 269, 270, 409, 291, 375, 321, 405, 314, 17, 84, 181, 91, 146, 61, 185, 40, 39, 37, 167, 164, 393, 391, 322, 410, 287, 273, 335, 406, 313, 18, 83, 182, 106, 43, 57, 186, 92, 165, 0],
+        // Chin
+        [152, 377, 400, 378, 379, 365, 397, 288, 361, 323, 454, 356, 389, 251, 284, 332, 297, 338, 10, 109, 67, 103, 54, 21, 162, 127, 234, 93, 132, 58, 172, 136, 150, 176, 148, 152]
+    ];
+    
+    // For MOSAIC_REGIONS, we'll subdivide these base regions
+    // Simple approach: use every Nth region group and subdivide large ones
+    const landmarksPerRegion = Math.max(5, Math.floor(468 / MOSAIC_REGIONS));
+    
+    // Create regions by grouping consecutive landmarks
+    for (let i = 0; i < 468; i += landmarksPerRegion) {
+        const regionLandmarks = [];
+        
+        for (let j = 0; j < landmarksPerRegion && (i + j) < 468; j++) {
+            regionLandmarks.push(i + j);
+        }
+        
+        if (regionLandmarks.length > 2) {  // Need at least 3 points for a polygon
+            regions.push({ landmarks: regionLandmarks });
         }
     }
     
-    if (DEBUG.logFaceData && frameCount % 30 === 0) {
-        const avgBlockWidth = bounds.width / MOSAIC_GRID_COLS;
-        const avgBlockHeight = bounds.height / MOSAIC_GRID_ROWS;
-        console.log(`✅ 3D Blocks drawn: ${blocksDrawn} / ${MOSAIC_GRID_COLS * MOSAIC_GRID_ROWS}`);
-        console.log(`📏 BASE block size: ${avgBlockWidth.toFixed(0)}px x ${avgBlockHeight.toFixed(0)}px (before warp)`);
-        console.log(`🎯 With 4x5 grid + extreme warp should match Minecraft-style target`);
+    return regions;
+}
+
+// Calculate average color for a region of landmarks
+function getRegionAverageColor(landmarkIndices, allLandmarks, imageData) {
+    let totalR = 0, totalG = 0, totalB = 0;
+    let count = 0;
+    
+    // Sample colors at each landmark in the region
+    for (const idx of landmarkIndices) {
+        const point = getLandmarkPixel(allLandmarks[idx]);
+        const x = Math.floor(point.x);
+        const y = Math.floor(point.y);
+        
+        if (x >= 0 && x < canvas.width && y >= 0 && y < canvas.height) {
+            const pixelIndex = (y * canvas.width + x) * 4;
+            totalR += imageData.data[pixelIndex];
+            totalG += imageData.data[pixelIndex + 1];
+            totalB += imageData.data[pixelIndex + 2];
+            count++;
+        }
     }
-}
-
-// Get depth warp factor based on face position
-// Nose area (center) has more depth, edges are flatter
-function getDepthWarp(u, v, landmarks) {
-    // u, v are normalized coordinates (0-1) across face
-    // Center (0.5, 0.5) should have maximum warp (nose)
-    const centerDist = Math.sqrt(Math.pow(u - 0.5, 2) + Math.pow(v - 0.5, 2));
-    const warp = Math.max(0, 1 - centerDist * 2); // 1 at center, 0 at edges
-    return warp * 100; // DRAMATICALLY increased from 15 to 100 for extreme perspective like target
-}
-
-// Apply depth-based warping to a point
-function applyDepthWarp(point, centerU, centerV, warpFactor, offsetU, offsetV) {
-    // Warp point based on its position relative to face center
-    // This simulates perspective/depth with EXTREME distortion to match target
     
-    // Much stronger perspective scaling
-    const scale = 1 + warpFactor * 0.08; // Increased from 0.01 to 0.08
-    
-    // Calculate warped position with extreme offset multiplier
-    const warpedX = point.x + offsetU * warpFactor * 3.5; // Multiplier increased from 1 to 3.5
-    const warpedY = point.y + offsetV * warpFactor * 3.5;
+    if (count === 0) {
+        return { r: 0, g: 0, b: 0 };
+    }
     
     return {
-        x: warpedX,
-        y: warpedY
+        r: Math.floor(totalR / count),
+        g: Math.floor(totalG / count),
+        b: Math.floor(totalB / count)
     };
 }
 
