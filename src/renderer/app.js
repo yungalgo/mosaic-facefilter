@@ -129,11 +129,6 @@ function drawMosaicEffect(landmarks) {
         ctx.closePath();
         ctx.fill();
         
-        // Draw border
-        ctx.strokeStyle = 'rgba(0, 0, 0, 0.5)';
-        ctx.lineWidth = 2;
-        ctx.stroke();
-        
         trianglesDrawn++;
     }
     
