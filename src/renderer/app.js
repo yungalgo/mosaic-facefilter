@@ -2,11 +2,10 @@ const video = document.getElementById('webcam');
 const canvas = document.getElementById('output');
 const ctx = canvas.getContext('2d');
 
-// Mosaic settings - TARGET SIZE: 30-40px blocks
-// Current result: 15px blocks with 8x10 grid
-// Need to roughly DOUBLE block size = HALVE grid count
-const MOSAIC_GRID_COLS = 5;   // Reduced from 8 (should give ~24px blocks)
-const MOSAIC_GRID_ROWS = 7;   // Reduced from 10 (should give ~24px blocks)
+// Mosaic settings - MATCH TARGET: Large distorted blocks like Minecraft face
+// Target shows ~4-5 blocks across face width with HEAVY perspective distortion
+const MOSAIC_GRID_COLS = 4;   // Very coarse grid to match target
+const MOSAIC_GRID_ROWS = 5;   // Only 20 total blocks for large size
 
 // Debug flags
 const DEBUG = {
@@ -298,18 +297,24 @@ function getDepthWarp(u, v, landmarks) {
     // Center (0.5, 0.5) should have maximum warp (nose)
     const centerDist = Math.sqrt(Math.pow(u - 0.5, 2) + Math.pow(v - 0.5, 2));
     const warp = Math.max(0, 1 - centerDist * 2); // 1 at center, 0 at edges
-    return warp * 15; // Scale factor for warping strength
+    return warp * 100; // DRAMATICALLY increased from 15 to 100 for extreme perspective like target
 }
 
 // Apply depth-based warping to a point
 function applyDepthWarp(point, centerU, centerV, warpFactor, offsetU, offsetV) {
     // Warp point based on its position relative to face center
-    // This simulates perspective/depth
-    const scale = 1 + warpFactor * 0.01;
+    // This simulates perspective/depth with EXTREME distortion to match target
+    
+    // Much stronger perspective scaling
+    const scale = 1 + warpFactor * 0.08; // Increased from 0.01 to 0.08
+    
+    // Calculate warped position with extreme offset multiplier
+    const warpedX = point.x + offsetU * warpFactor * 3.5; // Multiplier increased from 1 to 3.5
+    const warpedY = point.y + offsetV * warpFactor * 3.5;
     
     return {
-        x: point.x + offsetU * warpFactor,
-        y: point.y + offsetV * warpFactor
+        x: warpedX,
+        y: warpedY
     };
 }
 
