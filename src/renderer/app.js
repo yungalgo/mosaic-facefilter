@@ -364,7 +364,8 @@ uniform sampler2D uCameraTex;
 varying vec2 vScreenUV;
 
 void main() {
-    gl_FragColor = texture2D(uCameraTex, vScreenUV);
+    // flip Y so we sample from the correct part of the video
+    gl_FragColor = texture2D(uCameraTex, vec2(vScreenUV.x, 1.0 - vScreenUV.y));
 }
 `;
 
