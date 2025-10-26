@@ -80,6 +80,10 @@ uses mediapipe to track 468 face points, then renders chunky pixels that follow 
 
 two-tier detection: fast bbox pixelation kicks in immediately, then switches to high-quality mesh-based rendering once tracking locks.
 
+## credits
+
+thx to [@lschmelzeisen](https://github.com/lschmelzeisen) for [understanding-mediapipe-facemesh-output](https://github.com/lschmelzeisen/understanding-mediapipe-facemesh-output) — v helpful
+
 ## troubleshooting
 
 **camera not working?** check system privacy settings  
