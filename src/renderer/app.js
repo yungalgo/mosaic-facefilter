@@ -2,10 +2,11 @@ const video = document.getElementById('webcam');
 const canvas = document.getElementById('output');
 const ctx = canvas.getContext('2d');
 
-// Mosaic settings - TARGET SIZE TEST
-const MOSAIC_GRID_COLS = 8;   // TEST: Try 8 cols (between 6 and 12)
-const MOSAIC_GRID_ROWS = 10;  // TEST: Try 10 rows (between 8 and 15)
-// Will adjust after seeing result
+// Mosaic settings - TARGET SIZE: 30-40px blocks
+// Current result: 15px blocks with 8x10 grid
+// Need to roughly DOUBLE block size = HALVE grid count
+const MOSAIC_GRID_COLS = 5;   // Reduced from 8 (should give ~24px blocks)
+const MOSAIC_GRID_ROWS = 7;   // Reduced from 10 (should give ~24px blocks)
 
 // Debug flags
 const DEBUG = {
