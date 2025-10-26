@@ -1,14 +1,33 @@
 // Import MediaPipe Tasks Vision (NEW API)
 import vision from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3";
-const { FaceLandmarker, FilesetResolver, DrawingUtils } = vision;
+const { FaceLandmarker, FilesetResolver } = vision;
 
 const video = document.getElementById('webcam');
 const canvas = document.getElementById('output');
-const ctx = canvas.getContext('2d');
+const gl = canvas.getContext('webgl', { 
+    premultipliedAlpha: false,
+    antialias: false 
+});
+
+if (!gl) {
+    alert('WebGL not supported');
+    throw new Error('WebGL not supported');
+}
+
+// Configuration
+const CANON_SIZE = 512;      // Canonical UV texture size
+const BLOCK_SIZE = 24;       // Pixel block size (20-30px for Minecraft look)
+const SMALL_SIZE = Math.floor(CANON_SIZE / BLOCK_SIZE); // Downsampled size
 
 let faceLandmarker;
 let webcamRunning = false;
 let lastVideoTime = -1;
+
+// WebGL resources
+let programPassA, programPassB, programBlit;
+let fboCanon, texCanon, fboSmall, texSmall;
+let cameraTexture;
+let canonicalUVs = null; // Will be generated
 
 // Initialize FaceLandmarker
 async function createFaceLandmarker() {
@@ -30,6 +49,112 @@ async function createFaceLandmarker() {
     console.log('✅ FaceLandmarker ready!');
 }
 
+// Initialize WebGL resources
+function initWebGL() {
+    console.log('🎨 Initializing WebGL pipeline...');
+    
+    // Create shader programs
+    programPassA = createProgram(vertexShaderPassA, fragmentShaderPassA);
+    programPassB = createProgram(vertexShaderPassB, fragmentShaderPassB);
+    programBlit = createProgram(vertexShaderBlit, fragmentShaderBlit);
+    
+    // Create framebuffers and textures
+    ({ fbo: fboCanon, texture: texCanon } = createFramebuffer(CANON_SIZE, CANON_SIZE));
+    ({ fbo: fboSmall, texture: texSmall } = createFramebuffer(SMALL_SIZE, SMALL_SIZE));
+    
+    // Create camera texture
+    cameraTexture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, cameraTexture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    
+    console.log('✅ WebGL initialized');
+}
+
+// Create shader program
+function createProgram(vertexSource, fragmentSource) {
+    const vertexShader = compileShader(gl.VERTEX_SHADER, vertexSource);
+    const fragmentShader = compileShader(gl.FRAGMENT_SHADER, fragmentSource);
+    
+    const program = gl.createProgram();
+    gl.attachShader(program, vertexShader);
+    gl.attachShader(program, fragmentShader);
+    gl.linkProgram(program);
+    
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+        console.error('Program link error:', gl.getProgramInfoLog(program));
+        return null;
+    }
+    
+    return program;
+}
+
+// Compile shader
+function compileShader(type, source) {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        console.error('Shader compile error:', gl.getShaderInfoLog(shader));
+        return null;
+    }
+    
+    return shader;
+}
+
+// Create framebuffer with texture
+function createFramebuffer(width, height) {
+    const texture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    
+    const fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+    
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+        console.error('Framebuffer incomplete');
+    }
+    
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    
+    return { fbo, texture };
+}
+
+// Generate canonical UV coordinates (simplified approximation)
+function generateCanonicalUVs(landmarks) {
+    // Find bounding box
+    let minX = Infinity, minY = Infinity;
+    let maxX = -Infinity, maxY = -Infinity;
+    
+    for (const lm of landmarks) {
+        minX = Math.min(minX, lm.x);
+        minY = Math.min(minY, lm.y);
+        maxX = Math.max(maxX, lm.x);
+        maxY = Math.max(maxY, lm.y);
+    }
+    
+    const width = maxX - minX;
+    const height = maxY - minY;
+    const scale = Math.max(width, height);
+    
+    // Normalize to [0, 1] with centering
+    const uvs = new Float32Array(landmarks.length * 2);
+    for (let i = 0; i < landmarks.length; i++) {
+        uvs[i * 2] = (landmarks[i].x - minX) / scale;
+        uvs[i * 2 + 1] = (landmarks[i].y - minY) / scale;
+    }
+    
+    return uvs;
+}
+
 // Start webcam
 async function startCamera() {
     console.log('📹 Starting camera...');
@@ -45,6 +170,8 @@ async function startCamera() {
             canvas.width = video.videoWidth;
             canvas.height = video.videoHeight;
             console.log(`✅ Camera ready: ${canvas.width}x${canvas.height}`);
+            
+            initWebGL();
             predictWebcam();
         });
     } catch (err) {
@@ -66,15 +193,26 @@ async function predictWebcam() {
         // Detect face landmarks
         const results = faceLandmarker.detectForVideo(video, startTimeMs);
         
-        // Clear and draw video
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        // Update camera texture
+        gl.bindTexture(gl.TEXTURE_2D, cameraTexture);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+        
+        // Draw video background
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.viewport(0, 0, canvas.width, canvas.height);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        drawFullscreenQuad(programBlit, cameraTexture, canvas.width, canvas.height);
         
         if (results.faceLandmarks && results.faceLandmarks.length > 0) {
             const landmarks = results.faceLandmarks[0];
             
-            // Draw mosaic effect
-            drawMosaicEffect(landmarks);
+            // Generate canonical UVs on first frame
+            if (!canonicalUVs) {
+                canonicalUVs = generateCanonicalUVs(landmarks);
+            }
+            
+            // Render pixelated face effect
+            renderPixelatedFace(landmarks);
         }
     }
     
@@ -82,93 +220,247 @@ async function predictWebcam() {
     requestAnimationFrame(predictWebcam);
 }
 
-// Draw mosaic effect using face mesh triangles
-function drawMosaicEffect(landmarks) {
-    // Get image data for color sampling
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    
-    // Get tessellation triangles
+// Render the pixelated face effect (two-pass pipeline)
+function renderPixelatedFace(landmarks) {
     const tessellation = FaceLandmarker.FACE_LANDMARKS_TESSELATION;
     
-    let trianglesDrawn = 0;
-    let blocksDrawn = 0;
+    // PASS A: Unwrap camera to canonical UV space
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fboCanon);
+    gl.viewport(0, 0, CANON_SIZE, CANON_SIZE);
+    gl.clear(gl.COLOR_BUFFER_BIT);
     
-    // GROUP_SIZE: Number of consecutive triangles to merge into one block
-    // Higher = fewer, larger blocks (like Minecraft)
-    const GROUP_SIZE = 75; // Merge 75 triangles = very large blocks (fewer total blocks)
+    renderFaceMesh(programPassA, landmarks, tessellation, cameraTexture, true);
     
-    // Process triangles in groups - draw each group with border
-    for (let groupStart = 0; groupStart < tessellation.length; groupStart += GROUP_SIZE * 3) {
-        let groupTriangles = [];
-        
-        // Collect all triangles in this group
-        for (let i = groupStart; i < groupStart + (GROUP_SIZE * 3) && i + 2 < tessellation.length; i += 3) {
-            const conn1 = tessellation[i];
-            const conn2 = tessellation[i + 1];
-            const conn3 = tessellation[i + 2];
-            
-            const p1 = landmarks[conn1.start];
-            const p2 = landmarks[conn1.end];
-            const p3 = landmarks[conn2.end];
-            
-            if (!p1 || !p2 || !p3) continue;
-            
-            // Convert normalized coordinates to canvas pixels
-            const x1 = p1.x * canvas.width;
-            const y1 = p1.y * canvas.height;
-            const x2 = p2.x * canvas.width;
-            const y2 = p2.y * canvas.height;
-            const x3 = p3.x * canvas.width;
-            const y3 = p3.y * canvas.height;
-            
-            groupTriangles.push({ x1, y1, x2, y2, x3, y3 });
-        }
-        
-        if (groupTriangles.length === 0) continue;
-        
-        // Draw all triangles in this group with thin black gridlines only
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.3)'; // Semi-transparent white for visibility
-        ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)'; // Black gridlines
-        ctx.lineWidth = 1;
-        
-        for (const tri of groupTriangles) {
-            ctx.beginPath();
-            ctx.moveTo(tri.x1, tri.y1);
-            ctx.lineTo(tri.x2, tri.y2);
-            ctx.lineTo(tri.x3, tri.y3);
-            ctx.closePath();
-            ctx.fill();
-            ctx.stroke();
-            
-            trianglesDrawn++;
-        }
-        
-        blocksDrawn++;
-    }
+    // PIXELATION: Downsample
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fboSmall);
+    gl.viewport(0, 0, SMALL_SIZE, SMALL_SIZE);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    drawFullscreenQuad(programBlit, texCanon, SMALL_SIZE, SMALL_SIZE);
     
-    console.log(`✅ Drew ${blocksDrawn} blocks (${trianglesDrawn} triangles)`);
+    // PIXELATION: Upsample with NEAREST filter (creates blocks)
+    gl.bindTexture(gl.TEXTURE_2D, texSmall);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fboCanon);
+    gl.viewport(0, 0, CANON_SIZE, CANON_SIZE);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    drawFullscreenQuad(programBlit, texSmall, CANON_SIZE, CANON_SIZE);
+    
+    // Reset to LINEAR
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    
+    // PASS B: Rewrap canonical UV to screen space
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    
+    renderFaceMesh(programPassB, landmarks, tessellation, texCanon, false);
+    
+    gl.disable(gl.BLEND);
 }
 
-// Get average color for a triangle
-function getTriangleColor(x1, y1, x2, y2, x3, y3, imageData) {
-    const centerX = Math.floor((x1 + x2 + x3) / 3);
-    const centerY = Math.floor((y1 + y2 + y3) / 3);
+// Render face mesh with specified shader program
+function renderFaceMesh(program, landmarks, tessellation, texture, isPassA) {
+    gl.useProgram(program);
     
-    if (centerX < 0 || centerX >= canvas.width || centerY < 0 || centerY >= canvas.height) {
-        return { r: 0, g: 0, b: 0 };
+    // Build vertex data
+    const vertices = [];
+    const indices = [];
+    let vertexIndex = 0;
+    
+    for (let i = 0; i < tessellation.length; i += 3) {
+        const idx1 = tessellation[i].start;
+        const idx2 = tessellation[i + 1].start;
+        const idx3 = tessellation[i + 2].start;
+        
+        const lm1 = landmarks[idx1];
+        const lm2 = landmarks[idx2];
+        const lm3 = landmarks[idx3];
+        
+        if (!lm1 || !lm2 || !lm3) continue;
+        
+        // Screen positions (pixels)
+        const screenPos = [
+            [lm1.x * canvas.width, lm1.y * canvas.height],
+            [lm2.x * canvas.width, lm2.y * canvas.height],
+            [lm3.x * canvas.width, lm3.y * canvas.height]
+        ];
+        
+        // Canonical UVs
+        const uvs = [
+            [canonicalUVs[idx1 * 2], canonicalUVs[idx1 * 2 + 1]],
+            [canonicalUVs[idx2 * 2], canonicalUVs[idx2 * 2 + 1]],
+            [canonicalUVs[idx3 * 2], canonicalUVs[idx3 * 2 + 1]]
+        ];
+        
+        for (let j = 0; j < 3; j++) {
+            vertices.push(
+                screenPos[j][0], screenPos[j][1],  // Screen position
+                uvs[j][0], uvs[j][1]                // Canonical UV
+            );
+            indices.push(vertexIndex++);
+        }
     }
     
-    const pixelIndex = (centerY * canvas.width + centerX) * 4;
-    return {
-        r: imageData.data[pixelIndex],
-        g: imageData.data[pixelIndex + 1],
-        b: imageData.data[pixelIndex + 2]
-    };
+    const vertexData = new Float32Array(vertices);
+    const indexData = new Uint16Array(indices);
+    
+    // Create and bind buffers
+    const vbo = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+    gl.bufferData(gl.ARRAY_BUFFER, vertexData, gl.STATIC_DRAW);
+    
+    const ibo = gl.createBuffer();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indexData, gl.STATIC_DRAW);
+    
+    // Set attributes
+    if (isPassA) {
+        const aCanonUV = gl.getAttribLocation(program, 'aCanonUV');
+        const aScreenPos = gl.getAttribLocation(program, 'aScreenPos');
+        
+        gl.enableVertexAttribArray(aCanonUV);
+        gl.enableVertexAttribArray(aScreenPos);
+        
+        gl.vertexAttribPointer(aScreenPos, 2, gl.FLOAT, false, 16, 0);
+        gl.vertexAttribPointer(aCanonUV, 2, gl.FLOAT, false, 16, 8);
+        
+        gl.uniform2f(gl.getUniformLocation(program, 'uCanvasSize'), canvas.width, canvas.height);
+    } else {
+        const aScreenPos = gl.getAttribLocation(program, 'aScreenPos');
+        const aCanonUV = gl.getAttribLocation(program, 'aCanonUV');
+        
+        gl.enableVertexAttribArray(aScreenPos);
+        gl.enableVertexAttribArray(aCanonUV);
+        
+        gl.vertexAttribPointer(aScreenPos, 2, gl.FLOAT, false, 16, 0);
+        gl.vertexAttribPointer(aCanonUV, 2, gl.FLOAT, false, 16, 8);
+        
+        gl.uniform2f(gl.getUniformLocation(program, 'uCanvasSize'), canvas.width, canvas.height);
+    }
+    
+    // Set texture
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.uniform1i(gl.getUniformLocation(program, isPassA ? 'uCameraTex' : 'uPixelCanonTex'), 0);
+    
+    // Draw
+    gl.drawElements(gl.TRIANGLES, indices.length, gl.UNSIGNED_SHORT, 0);
+    
+    // Cleanup
+    gl.deleteBuffer(vbo);
+    gl.deleteBuffer(ibo);
 }
+
+// Draw fullscreen quad (for blit operations)
+function drawFullscreenQuad(program, texture, width, height) {
+    gl.useProgram(program);
+    
+    const vertices = new Float32Array([
+        -1, -1,  0, 0,
+         1, -1,  1, 0,
+        -1,  1,  0, 1,
+         1,  1,  1, 1
+    ]);
+    
+    const vbo = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+    gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+    
+    const aPos = gl.getAttribLocation(program, 'aPos');
+    const aUV = gl.getAttribLocation(program, 'aUV');
+    
+    gl.enableVertexAttribArray(aPos);
+    gl.enableVertexAttribArray(aUV);
+    
+    gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 16, 0);
+    gl.vertexAttribPointer(aUV, 2, gl.FLOAT, false, 16, 8);
+    
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.uniform1i(gl.getUniformLocation(program, 'uTex'), 0);
+    
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    
+    gl.deleteBuffer(vbo);
+}
+
+// PASS A: Unwrap camera to canonical UV
+const vertexShaderPassA = `
+attribute vec2 aCanonUV;
+attribute vec2 aScreenPos;
+uniform vec2 uCanvasSize;
+varying vec2 vScreenUV;
+
+void main() {
+    vec2 posNDC = aCanonUV * 2.0 - 1.0;
+    gl_Position = vec4(posNDC, 0.0, 1.0);
+    vScreenUV = aScreenPos / uCanvasSize;
+}
+`;
+
+const fragmentShaderPassA = `
+precision mediump float;
+uniform sampler2D uCameraTex;
+varying vec2 vScreenUV;
+
+void main() {
+    gl_FragColor = texture2D(uCameraTex, vScreenUV);
+}
+`;
+
+// PASS B: Rewrap canonical UV to screen
+const vertexShaderPassB = `
+attribute vec2 aScreenPos;
+attribute vec2 aCanonUV;
+uniform vec2 uCanvasSize;
+varying vec2 vCanonUV;
+
+void main() {
+    vec2 posNDC = (aScreenPos / uCanvasSize) * 2.0 - 1.0;
+    posNDC.y = -posNDC.y;
+    gl_Position = vec4(posNDC, 0.0, 1.0);
+    vCanonUV = aCanonUV;
+}
+`;
+
+const fragmentShaderPassB = `
+precision mediump float;
+uniform sampler2D uPixelCanonTex;
+varying vec2 vCanonUV;
+
+void main() {
+    gl_FragColor = texture2D(uPixelCanonTex, vCanonUV);
+}
+`;
+
+// Blit shader (for fullscreen texture copy)
+const vertexShaderBlit = `
+attribute vec2 aPos;
+attribute vec2 aUV;
+varying vec2 vUV;
+
+void main() {
+    gl_Position = vec4(aPos, 0.0, 1.0);
+    vUV = aUV;
+}
+`;
+
+const fragmentShaderBlit = `
+precision mediump float;
+uniform sampler2D uTex;
+varying vec2 vUV;
+
+void main() {
+    gl_FragColor = texture2D(uTex, vUV);
+}
+`;
 
 // Initialize everything
 async function init() {
-    console.log('🚀 Starting Mosaic Face Filter...');
+    console.log('🚀 Starting Mosaic Face Filter (WebGL UV Pipeline)...');
     await createFaceLandmarker();
     await startCamera();
 }
