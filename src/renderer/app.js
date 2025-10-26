@@ -95,7 +95,7 @@ function drawMosaicEffect(landmarks) {
     
     // GROUP_SIZE: Number of consecutive triangles to merge into one block
     // Higher = fewer, larger blocks (like Minecraft)
-    const GROUP_SIZE = 25; // Merge 25 triangles = much larger blocks
+    const GROUP_SIZE = 75; // Merge 75 triangles = very large blocks (fewer total blocks)
     
     // Process triangles in groups - all triangles in a group get the same color
     for (let groupStart = 0; groupStart < tessellation.length; groupStart += GROUP_SIZE * 3) {
