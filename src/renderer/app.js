@@ -2,9 +2,10 @@ const video = document.getElementById('webcam');
 const canvas = document.getElementById('output');
 const ctx = canvas.getContext('2d');
 
-// Mosaic settings - make blocks bigger
-const MOSAIC_GRID_COLS = 12;  // Reduced from 16 for larger blocks
-const MOSAIC_GRID_ROWS = 15;  // Reduced from 20 for larger blocks
+// Mosaic settings - TARGET SIZE TEST
+const MOSAIC_GRID_COLS = 8;   // TEST: Try 8 cols (between 6 and 12)
+const MOSAIC_GRID_ROWS = 10;  // TEST: Try 10 rows (between 8 and 15)
+// Will adjust after seeing result
 
 // Debug flags
 const DEBUG = {
@@ -281,7 +282,11 @@ function applyMosaicToFace(landmarks) {
     }
     
     if (DEBUG.logFaceData && frameCount % 30 === 0) {
+        const avgBlockWidth = bounds.width / MOSAIC_GRID_COLS;
+        const avgBlockHeight = bounds.height / MOSAIC_GRID_ROWS;
         console.log(`✅ 3D Blocks drawn: ${blocksDrawn} / ${MOSAIC_GRID_COLS * MOSAIC_GRID_ROWS}`);
+        console.log(`📏 Average block size: ${avgBlockWidth.toFixed(0)}px x ${avgBlockHeight.toFixed(0)}px`);
+        console.log(`🎯 Target for reference: ~30-40px blocks would match example`);
     }
 }
 
