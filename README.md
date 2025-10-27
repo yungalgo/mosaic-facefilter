@@ -15,6 +15,17 @@ saw someone using this filter on instagram and couldn't find it anywhere, so i j
 - runs at 60fps with GPU acceleration
 - works with OBS for streaming
 
+## requirements
+
+- **node.js** v16 or higher ([download](https://nodejs.org))
+- **npm** v7 or higher (comes with node)
+
+check your versions:
+```bash
+node -v
+npm -v
+```
+
 ## quick start
 
 **just want to use it?**
@@ -33,9 +44,11 @@ npm start
 ```powershell
 git clone https://github.com/yungalgo/mosaic-facefilter.git
 cd mosaic-facefilter
-npm install
+npm install --no-optional --ignore-scripts
 npm start
 ```
+
+**note:** windows sometimes needs `--no-optional --ignore-scripts` for electron to install cleanly
 
 the app opens, asks for camera permissions, and you're done.
 
