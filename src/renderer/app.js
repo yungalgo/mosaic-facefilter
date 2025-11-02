@@ -4,6 +4,7 @@ const { FaceLandmarker, FilesetResolver } = vision;
 
 const video = document.getElementById('webcam');
 const canvas = document.getElementById('output');
+const cameraSelect = document.getElementById('cameraSelect');
 const gl = canvas.getContext('webgl', { 
     premultipliedAlpha: false,
     antialias: false,
@@ -26,6 +27,8 @@ const TILES_V = 14;
 const FACE_SCALE_Y_DOWN = 1.1;  // 10% extension downward for chin coverage
 
 let faceLandmarker;
+let currentStream = null;
+let webglInitialized = false;
 let webcamRunning = false;
 let lastVideoTime = -1;
 
@@ -73,6 +76,7 @@ async function loadTriangulation() {
 
 // Initialize WebGL resources
 function initWebGL() {
+    if (webglInitialized) return;
     
     // Set texture upload flip (fixes upside-down video)
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
@@ -93,7 +97,8 @@ function initWebGL() {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    
+
+	webglInitialized = true;
 }
 
 // Create shader program
@@ -148,26 +153,84 @@ function createFramebuffer(width, height) {
     return { fbo, texture };
 }
 
-// Start webcam
-async function startCamera() {
-    
-    try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-            video: { width: 640, height: 480 }
-        });
-        
-        video.srcObject = stream;
-        video.addEventListener('loadeddata', () => {
-            webcamRunning = true;
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
-            
-            initWebGL();
-            predictWebcam();
-        });
-    } catch (err) {
-        alert('Please allow camera access');
-    }
+// Enumerate available cameras (cross-platform)
+async function getCameras() {
+	const devices = await navigator.mediaDevices.enumerateDevices();
+	return devices.filter(d => d.kind === 'videoinput');
+}
+
+// Populate selector with available cameras
+async function populateCameraList() {
+	if (!cameraSelect) return;
+	const cameras = await getCameras();
+	cameraSelect.innerHTML = '';
+
+	// Determine currently active device
+	let activeId = null;
+	if (currentStream) {
+		const track = currentStream.getVideoTracks()[0];
+		const settings = track.getSettings ? track.getSettings() : {};
+		activeId = settings.deviceId || null;
+	}
+
+    cameras.forEach((cam, idx) => {
+        const opt = document.createElement('option');
+        opt.value = cam.deviceId;
+        const label = cam.label || `Camera ${idx + 1}`;
+        const short = label.length > 12 ? label.slice(0, 12) + '…' : label;
+        opt.text = short;
+		if (activeId && cam.deviceId === activeId) opt.selected = true;
+		cameraSelect.appendChild(opt);
+	});
+}
+
+// Stop current camera stream
+function stopCamera() {
+	if (currentStream) {
+		currentStream.getTracks().forEach(t => t.stop());
+		currentStream = null;
+	}
+	webcamRunning = false;
+}
+
+// Start webcam (optionally with a specific deviceId)
+async function startCamera(deviceId = null) {
+	try {
+		let constraints = { video: { width: 640, height: 480 } };
+		if (deviceId) constraints = { video: { deviceId: { exact: deviceId }, width: 640, height: 480 } };
+
+		const stream = await navigator.mediaDevices.getUserMedia(constraints);
+		currentStream = stream;
+		video.srcObject = stream;
+
+		video.addEventListener('loadeddata', () => {
+			webcamRunning = true;
+			canvas.width = video.videoWidth;
+			canvas.height = video.videoHeight;
+
+			initWebGL();
+			predictWebcam();
+		});
+
+		// Populate selector after permission granted (labels available)
+		await populateCameraList();
+	} catch (err) {
+		// Fallback: try default camera if exact match fails
+		if (deviceId) {
+			return startCamera(null);
+		}
+		alert('Please allow camera access');
+	}
+}
+
+// One-time selector change handler
+function setupCameraSelector() {
+	if (!cameraSelect) return;
+	cameraSelect.addEventListener('change', async () => {
+		const id = cameraSelect.value;
+		stopCamera();
+		await startCamera(id);
+	});
 }
 
 // Main prediction loop
@@ -441,6 +504,7 @@ void main() {
 
 // Initialize everything
 async function init() {
+    setupCameraSelector();
     await createFaceLandmarker();
     await loadCanonicalUVs();
     await loadTriangulation();
