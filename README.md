@@ -41,7 +41,7 @@ npm start
 
 ### windows
 
-```powershell or console
+```bash
 git clone https://github.com/yungalgo/mosaic-facefilter.git
 cd mosaic-facefilter
 
