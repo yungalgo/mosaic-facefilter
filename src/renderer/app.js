@@ -294,11 +294,15 @@ async function predictWebcam() {
                 }
                 gl.bindTexture(gl.TEXTURE_2D, maskTexture);
                 gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, mw, mh, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
-                // Draw masked video background
+                // Draw masked video background over green clear for chroma key
                 gl.bindFramebuffer(gl.FRAMEBUFFER, null);
                 gl.viewport(0, 0, canvas.width, canvas.height);
+                gl.clearColor(0.0, 1.0, 0.0, 1.0); // chroma green
                 gl.clear(gl.COLOR_BUFFER_BIT);
+                gl.enable(gl.BLEND);
+                gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
                 drawMaskedVideo();
+                gl.disable(gl.BLEND);
                 drewMasked = true;
             }
         }
