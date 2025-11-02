@@ -41,14 +41,16 @@ npm start
 
 ### windows
 
-```powershell
+```powershell or console
 git clone https://github.com/yungalgo/mosaic-facefilter.git
 cd mosaic-facefilter
-npm install --no-optional --ignore-scripts
+
+# install (downloads Electron binary via postinstall)
+npm install --no-optional --foreground-scripts
+
+# run
 npm start
 ```
-
-**note:** windows sometimes needs `--no-optional --ignore-scripts` for electron to install cleanly
 
 the app opens, asks for camera permissions, and you're done.
 
@@ -97,8 +99,16 @@ thx to [@lschmelzeisen](https://github.com/lschmelzeisen) for [understanding-med
 
 ## troubleshooting
 
+**windows: Electron failed to install correctly**  
+Delete the broken electron package and reinstall with scripts enabled:
+```powershell
+rmdir /s /q node_modules\electron
+npm cache clean --force
+npm install electron@28 --save-dev --foreground-scripts
+npm install --no-optional --foreground-scripts
+```
+
 **camera not working?** check system privacy settings  
-**app won't start?** run `npm run reinstall`  
 **laggy?** lower the TILES values
 
 ---
