@@ -1,6 +1,6 @@
 // Import MediaPipe Tasks Vision (NEW API)
 import vision from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3";
-const { FaceLandmarker, FilesetResolver } = vision;
+const { FaceLandmarker, ImageSegmenter, FilesetResolver } = vision;
 
 const video = document.getElementById('webcam');
 const canvas = document.getElementById('output');
@@ -27,15 +27,16 @@ const TILES_V = 14;
 const FACE_SCALE_Y_DOWN = 1.1;  // 10% extension downward for chin coverage
 
 let faceLandmarker;
+let imageSegmenter;
 let currentStream = null;
 let webglInitialized = false;
 let webcamRunning = false;
 let lastVideoTime = -1;
 
 // WebGL resources
-let programPassA, programPassB, programBlit;
+let programPassA, programPassB, programBlit, programMasked;
 let fboCanon, texCanon, fboSmall, texSmall;
-let cameraTexture;
+let cameraTexture, maskTexture;
 let canonicalUVs = null; // Will be loaded from canonical_468_uv.json
 let TRI = null; // Will be loaded from triangulation_468.json
 
@@ -55,6 +56,22 @@ async function createFaceLandmarker() {
         numFaces: 1
     });
     
+}
+
+// Initialize ImageSegmenter (person/background mask)
+async function createImageSegmenter() {
+    const filesetResolver = await FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm"
+    );
+    imageSegmenter = await ImageSegmenter.createFromOptions(filesetResolver, {
+        baseOptions: {
+            modelAssetPath: `https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite`,
+            delegate: "GPU"
+        },
+        runningMode: "VIDEO",
+        outputCategoryMask: false,
+        outputConfidenceMasks: true
+    });
 }
 
 // Load canonical UV coordinates
@@ -85,6 +102,7 @@ function initWebGL() {
     programPassA = createProgram(vertexShaderPassA, fragmentShaderPassA);
     programPassB = createProgram(vertexShaderPassB, fragmentShaderPassB);
     programBlit = createProgram(vertexShaderBlit, fragmentShaderBlit);
+    programMasked = createProgram(vertexShaderBlit, fragmentShaderMasked);
     
     // Create framebuffers and textures
     ({ fbo: fboCanon, texture: texCanon } = createFramebuffer(CANON_SIZE, CANON_SIZE));
@@ -99,6 +117,14 @@ function initWebGL() {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
 
 	webglInitialized = true;
+
+    // Create mask texture
+    maskTexture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, maskTexture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
 }
 
 // Create shader program
@@ -250,11 +276,39 @@ async function predictWebcam() {
         gl.bindTexture(gl.TEXTURE_2D, cameraTexture);
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
         
-        // Draw video background
-        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-        gl.viewport(0, 0, canvas.width, canvas.height);
-        gl.clear(gl.COLOR_BUFFER_BIT);
-        drawFullscreenQuad(programBlit, cameraTexture, canvas.width, canvas.height);
+        // Optional: get person/background mask
+        let drewMasked = false;
+        if (imageSegmenter) {
+            const seg = imageSegmenter.segmentForVideo(video, startTimeMs);
+            if (seg && seg.confidenceMasks && seg.confidenceMasks.length > 0) {
+                // Assume index 1 is person; if only one mask, use that
+                const maskTex = seg.confidenceMasks[Math.min(1, seg.confidenceMasks.length - 1)];
+                const maskData = maskTex.getAsFloat32Array();
+                const mw = maskTex.width;
+                const mh = maskTex.height;
+                const rgba = new Uint8Array(mw * mh * 4);
+                for (let i = 0; i < maskData.length; i++) {
+                    const a = Math.max(0, Math.min(255, Math.round(maskData[i] * 255)));
+                    const o = i * 4;
+                    rgba[o+0] = 255; rgba[o+1] = 255; rgba[o+2] = 255; rgba[o+3] = a;
+                }
+                gl.bindTexture(gl.TEXTURE_2D, maskTexture);
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, mw, mh, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+                // Draw masked video background
+                gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+                gl.viewport(0, 0, canvas.width, canvas.height);
+                gl.clear(gl.COLOR_BUFFER_BIT);
+                drawMaskedVideo();
+                drewMasked = true;
+            }
+        }
+        if (!drewMasked) {
+            // Fallback: draw regular video background
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            gl.viewport(0, 0, canvas.width, canvas.height);
+            gl.clear(gl.COLOR_BUFFER_BIT);
+            drawFullscreenQuad(programBlit, cameraTexture, canvas.width, canvas.height);
+        }
         
         if (results.faceLandmarks && results.faceLandmarks.length > 0) {
             const landmarks = results.faceLandmarks[0];
@@ -430,6 +484,34 @@ function drawFullscreenQuad(program, texture, width, height) {
     gl.deleteBuffer(vbo);
 }
 
+// Draw video with segmentation mask applied
+function drawMaskedVideo() {
+    gl.useProgram(programMasked);
+    const vertices = new Float32Array([
+        -1, -1,  0, 0,
+         1, -1,  1, 0,
+        -1,  1,  0, 1,
+         1,  1,  1, 1
+    ]);
+    const vbo = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+    gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+    const aPos = gl.getAttribLocation(programMasked, 'aPos');
+    const aUV = gl.getAttribLocation(programMasked, 'aUV');
+    gl.enableVertexAttribArray(aPos);
+    gl.enableVertexAttribArray(aUV);
+    gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 16, 0);
+    gl.vertexAttribPointer(aUV, 2, gl.FLOAT, false, 16, 8);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, cameraTexture);
+    gl.uniform1i(gl.getUniformLocation(programMasked, 'uTex'), 0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, maskTexture);
+    gl.uniform1i(gl.getUniformLocation(programMasked, 'uMask'), 1);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    gl.deleteBuffer(vbo);
+}
+
 // PASS A: Unwrap camera to canonical UV
 const vertexShaderPassA = `
 attribute vec2 aCanonUV;
@@ -502,10 +584,26 @@ void main() {
 }
 `;
 
+// Masked blit - applies alpha from segmentation mask
+const fragmentShaderMasked = `
+precision mediump float;
+uniform sampler2D uTex;   // camera
+uniform sampler2D uMask;  // rgba mask in alpha
+varying vec2 vUV;
+
+void main() {
+    vec2 uv = vec2(vUV.x, vUV.y);
+    vec4 color = texture2D(uTex, uv);
+    vec4 mask = texture2D(uMask, uv);
+    gl_FragColor = vec4(color.rgb, color.a * mask.a);
+}
+`;
+
 // Initialize everything
 async function init() {
     setupCameraSelector();
     await createFaceLandmarker();
+    await createImageSegmenter();
     await loadCanonicalUVs();
     await loadTriangulation();
     await startCamera();
