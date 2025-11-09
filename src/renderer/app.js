@@ -5,6 +5,7 @@ const { FaceLandmarker, ImageSegmenter, FilesetResolver } = vision;
 const video = document.getElementById('webcam');
 const canvas = document.getElementById('output');
 const cameraSelect = document.getElementById('cameraSelect');
+const faceOnlyToggle = document.getElementById('faceOnlyToggle');
 const gl = canvas.getContext('webgl', { 
     premultipliedAlpha: false,
     antialias: false,
@@ -276,42 +277,53 @@ async function predictWebcam() {
         gl.bindTexture(gl.TEXTURE_2D, cameraTexture);
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
         
+        // Check if face-only mode is enabled
+        const faceOnlyMode = faceOnlyToggle && faceOnlyToggle.checked;
+        
         // Optional: get person/background mask
         let drewMasked = false;
-        if (imageSegmenter) {
-            const seg = imageSegmenter.segmentForVideo(video, startTimeMs);
-            if (seg && seg.confidenceMasks && seg.confidenceMasks.length > 0) {
-                // Assume index 1 is person; if only one mask, use that
-                const maskTex = seg.confidenceMasks[Math.min(1, seg.confidenceMasks.length - 1)];
-                const maskData = maskTex.getAsFloat32Array();
-                const mw = maskTex.width;
-                const mh = maskTex.height;
-                const rgba = new Uint8Array(mw * mh * 4);
-                for (let i = 0; i < maskData.length; i++) {
-                    const a = Math.max(0, Math.min(255, Math.round(maskData[i] * 255)));
-                    const o = i * 4;
-                    rgba[o+0] = 255; rgba[o+1] = 255; rgba[o+2] = 255; rgba[o+3] = a;
+        if (!faceOnlyMode) {
+            if (imageSegmenter) {
+                const seg = imageSegmenter.segmentForVideo(video, startTimeMs);
+                if (seg && seg.confidenceMasks && seg.confidenceMasks.length > 0) {
+                    // Assume index 1 is person; if only one mask, use that
+                    const maskTex = seg.confidenceMasks[Math.min(1, seg.confidenceMasks.length - 1)];
+                    const maskData = maskTex.getAsFloat32Array();
+                    const mw = maskTex.width;
+                    const mh = maskTex.height;
+                    const rgba = new Uint8Array(mw * mh * 4);
+                    for (let i = 0; i < maskData.length; i++) {
+                        const a = Math.max(0, Math.min(255, Math.round(maskData[i] * 255)));
+                        const o = i * 4;
+                        rgba[o+0] = 255; rgba[o+1] = 255; rgba[o+2] = 255; rgba[o+3] = a;
+                    }
+                    gl.bindTexture(gl.TEXTURE_2D, maskTexture);
+                    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, mw, mh, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+                    // Draw masked video background over green clear for chroma key
+                    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+                    gl.viewport(0, 0, canvas.width, canvas.height);
+                    gl.clearColor(0.0, 1.0, 0.0, 1.0); // chroma green
+                    gl.clear(gl.COLOR_BUFFER_BIT);
+                    gl.enable(gl.BLEND);
+                    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+                    drawMaskedVideo();
+                    gl.disable(gl.BLEND);
+                    drewMasked = true;
                 }
-                gl.bindTexture(gl.TEXTURE_2D, maskTexture);
-                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, mw, mh, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
-                // Draw masked video background over green clear for chroma key
+            }
+            if (!drewMasked) {
+                // Fallback: draw regular video background
                 gl.bindFramebuffer(gl.FRAMEBUFFER, null);
                 gl.viewport(0, 0, canvas.width, canvas.height);
-                gl.clearColor(0.0, 1.0, 0.0, 1.0); // chroma green
                 gl.clear(gl.COLOR_BUFFER_BIT);
-                gl.enable(gl.BLEND);
-                gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-                drawMaskedVideo();
-                gl.disable(gl.BLEND);
-                drewMasked = true;
+                drawFullscreenQuad(programBlit, cameraTexture, canvas.width, canvas.height);
             }
-        }
-        if (!drewMasked) {
-            // Fallback: draw regular video background
+        } else {
+            // Face-only mode: clear to chroma green for keying
             gl.bindFramebuffer(gl.FRAMEBUFFER, null);
             gl.viewport(0, 0, canvas.width, canvas.height);
+            gl.clearColor(0.0, 1.0, 0.0, 1.0); // chroma green background
             gl.clear(gl.COLOR_BUFFER_BIT);
-            drawFullscreenQuad(programBlit, cameraTexture, canvas.width, canvas.height);
         }
         
         if (results.faceLandmarks && results.faceLandmarks.length > 0) {
