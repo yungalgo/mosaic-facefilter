@@ -14,6 +14,7 @@ saw someone using this filter on instagram and couldn't find it anywhere, so i j
 - instant privacy protection (covers your face from frame 1)
 - runs at 60fps with GPU acceleration
 - works with OBS for streaming
+- face-only mode hides everything except the mosaic for maximum anonymity
 
 ## requirements
 
@@ -92,6 +93,14 @@ const FACE_SCALE_Y_DOWN = 1.1;  // how much to extend down (chin coverage)
 uses mediapipe to track 468 face points, then renders chunky pixels that follow your face in 3D. depth testing makes sure the front of your face covers the back when you turn.
 
 two-tier detection: fast bbox pixelation kicks in immediately, then switches to high-quality mesh-based rendering once tracking locks.
+
+## updates
+
+**november 9, 2025**
+- added **face-only mode** toggle for maximum anonymity. when enabled, shows only the pixelated face on a chroma green background. if no face is detected, screen goes completely blank. perfect for zero-leak privacy streaming.
+
+**october 21, 2025**
+- added **camera selector** dropdown. switch between multiple cameras on the fly without restarting the app.
 
 ## credits
 
