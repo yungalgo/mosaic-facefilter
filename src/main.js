@@ -1,14 +1,6 @@
 const { app, BrowserWindow } = require('electron');
 const path = require('path');
 
-// Prevent Chromium from throttling when window is unfocused/occluded (common when gaming)
-app.commandLine.appendSwitch('disable-background-timer-throttling');
-app.commandLine.appendSwitch('disable-renderer-backgrounding');
-app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
-
-// (Optional) If your app is basically a live video pipeline, this can help
-// app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
-
 function createWindow() {
   const win = new BrowserWindow({
     width: 640,
