@@ -29,7 +29,10 @@
     "mac": {
       "category": "public.app-category.video",
       "target": ["dmg"],
-      "icon": "assets/icon.png"
+      "icon": "assets/icon.png",
+      "extendInfo": {
+        "NSCameraUseContinuityCameraDeviceType": true
+      }
     },
     "win": {
       "target": ["nsis"],

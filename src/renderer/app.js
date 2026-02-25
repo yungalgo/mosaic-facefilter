@@ -27,6 +27,124 @@ const TILES_V = 14;
 // Face mesh scale - extend downward to cover chin
 const FACE_SCALE_Y_DOWN = 1.1;  // 10% extension downward for chin coverage
 
+// ---------------------------------------------------------------------------
+// Anti-reconstruction: configuration
+// ---------------------------------------------------------------------------
+
+// Geometry distortion amplitude (fraction of face bounding box).
+// Higher = more warping, harder to reconstruct, but more visual distortion.
+const DISTORT_AMPLITUDE = 0.012;
+
+// Base rotation interval (ms) for entropy subkeys. Each key (geometry and
+// color) rotates independently; actual interval = BASE ± JITTER_MS/2.
+const SUBKEY_ROTATE_MS = 1000;
+
+// Random ± jitter added to each rotation interval so the rotation cadence
+// has no fixed period that could be used as a synchronisation fingerprint.
+const JITTER_MS = 300;
+
+// Geometry crossfade duration (ms). On geometry-key rotation the displacement
+// field lerps from old to new so head shape morphs smoothly.
+const GEOM_HYSTERESIS_MS = 200;
+
+// Black-tile mask duration (ms). On color-key rotation the face tiles fade
+// briefly to black, destroying frame-boundary correlations for the attacker.
+const MASK_MS = 80;
+
+// ---------------------------------------------------------------------------
+// Anti-reconstruction: dual-domain keyed PRNG engine
+//
+// Two fully independent subkeys are maintained:
+//   subKeyGeom  — drives per-vertex geometry displacement (spatial warping)
+//   subKeyColor — drives tile permutation + color remap (pixel-value scramble)
+//
+// Keeping them separate means:
+//   - geometry and color perturbations are statistically independent,
+//     so cross-channel leakage (e.g. inferring color state from geometry
+//     trajectories) is impossible
+//   - each key is fresh random on startup — no zero-entropy initial window
+//   - each key rotates on its own jittered schedule so neither channel has
+//     a fixed cadence that can serve as a synchronisation fingerprint
+//
+// On geometry rotation: old→new displacement field crossfades over
+//   GEOM_HYSTERESIS_MS so head shape morphs smoothly.
+// On color rotation:    face tiles briefly fade to black (MASK_MS) to
+//   destroy frame-boundary correlations; background is untouched.
+// ---------------------------------------------------------------------------
+
+// --- Geometry subkey ---
+let subKeyGeom     = crypto.getRandomValues(new Uint32Array(4)); // hot-start
+let subKeyGeomPrev = new Uint32Array(subKeyGeom);                // copy for lerp
+let geomKeyTs      = performance.now();                          // treat as just-rotated
+let nextGeomRotMs  = SUBKEY_ROTATE_MS + (Math.random() - 0.5) * JITTER_MS;
+
+// --- Color subkey ---
+let subKeyColor    = crypto.getRandomValues(new Uint32Array(4)); // hot-start
+let colorKeyTs     = performance.now();
+let nextColorRotMs = SUBKEY_ROTATE_MS + (Math.random() - 0.5) * JITTER_MS;
+
+// --- Boundary mask (color channel) ---
+// Spikes to 1.0 on color rotation, decays to 0 over MASK_MS.
+// Passed to the scramble shader to mix face output toward black.
+let boundaryMaskTs = -MASK_MS; // start fully decayed (no initial flash)
+
+/** Jittered next-interval helper. */
+function nextInterval() {
+    return SUBKEY_ROTATE_MS + (Math.random() - 0.5) * JITTER_MS;
+}
+
+/**
+ * Rotate geometry key if its interval has elapsed.
+ * Returns true if a rotation occurred.
+ */
+function rotateGeomKeyIfNeeded(now) {
+    if (now - geomKeyTs < nextGeomRotMs) return false;
+    subKeyGeomPrev.set(subKeyGeom);
+    crypto.getRandomValues(subKeyGeom);
+    geomKeyTs     = now;
+    nextGeomRotMs = nextInterval();
+    return true;
+}
+
+/**
+ * Rotate color key if its interval has elapsed.
+ * Returns true if a rotation occurred.
+ */
+function rotateColorKeyIfNeeded(now) {
+    if (now - colorKeyTs < nextColorRotMs) return false;
+    crypto.getRandomValues(subKeyColor);
+    colorKeyTs     = now;
+    nextColorRotMs = nextInterval();
+    return true;
+}
+
+/**
+ * Blend factor [0..1] for geometry hysteresis crossfade.
+ * 0 = just rotated (use subKeyGeomPrev), 1 = settled (use subKeyGeom).
+ */
+function getGeomBlend(now) {
+    return Math.min((now - geomKeyTs) / GEOM_HYSTERESIS_MS, 1.0);
+}
+
+/**
+ * Boundary mask value [0..1] for color-channel black-tile overlay.
+ * 1 = just rotated (all black), 0 = fully decayed (normal output).
+ */
+function getBoundaryMask(now) {
+    return Math.max(0.0, 1.0 - (now - boundaryMaskTs) / MASK_MS);
+}
+
+/**
+ * Seeded pseudo-random number in [0, 1) derived from an integer seed and
+ * the given key. Uses xorshift32 for speed; cryptographic quality is not
+ * needed — we just need temporal decorrelation.
+ */
+function seededRand(seed, key) {
+    let s = ((seed ^ key[0] ^ (key[1] << 3)) >>> 0) || 1;
+    s ^= s << 13; s ^= s >>> 17; s ^= s << 5;
+    return (s >>> 0) / 4294967296;
+}
+
 let faceLandmarker;
 let imageSegmenter;
 let currentStream = null;
@@ -35,11 +153,47 @@ let webcamRunning = false;
 let lastVideoTime = -1;
 
 // WebGL resources
-let programPassA, programPassB, programBlit, programMasked;
-let fboCanon, texCanon, fboSmall, texSmall;
+let programPassA, programPassB, programBlit, programMasked, programScramble;
+let fboCanon, texCanon, fboSmall, texSmall, fboScramble, texScramble;
 let cameraTexture, maskTexture;
+// Shared fullscreen quad VBO — allocated once in initWebGL, reused everywhere
+let quadVBO = null;
 let canonicalUVs = null; // Will be loaded from canonical_468_uv.json
 let TRI = null; // Will be loaded from triangulation_468.json
+
+// ---------------------------------------------------------------------------
+// Anti-reconstruction: per-vertex displacement state
+//
+// Two buffers hold the displacement field for the current and previous subkey
+// windows. Each frame we lerp between them during the hysteresis crossfade
+// so rotations look like smooth morphing instead of hard pops.
+// Layout: [dx0, dy0, dz0, dx1, dy1, dz1, ...] — 3 floats per landmark.
+// ---------------------------------------------------------------------------
+
+let displaceCurr = new Float32Array(468 * 3);
+let displacePrev = new Float32Array(468 * 3);
+
+/**
+ * Regenerate the displacement field for a given subkey.
+ * Each vertex gets a small random offset seeded by (vertex index + key).
+ * Returns a Float32Array(468*3) of [dx, dy, dz] triples.
+ */
+function generateDisplacementField(key) {
+    const field = new Float32Array(468 * 3);
+    for (let i = 0; i < 468; i++) {
+        const seed = i * 7919;
+        field[i * 3 + 0] = (seededRand(seed,     key) - 0.5) * DISTORT_AMPLITUDE;
+        field[i * 3 + 1] = (seededRand(seed + 1, key) - 0.5) * DISTORT_AMPLITUDE;
+        field[i * 3 + 2] = (seededRand(seed + 2, key) - 0.5) * DISTORT_AMPLITUDE * 0.3;
+    }
+    return field;
+}
+
+/** Refresh displacement buffers after a geometry-key rotation. */
+function refreshDisplacements() {
+    displacePrev.set(displaceCurr);
+    displaceCurr = generateDisplacementField(subKeyGeom);
+}
 
 // Initialize FaceLandmarker
 async function createFaceLandmarker() {
@@ -104,10 +258,22 @@ function initWebGL() {
     programPassB = createProgram(vertexShaderPassB, fragmentShaderPassB);
     programBlit = createProgram(vertexShaderBlit, fragmentShaderBlit);
     programMasked = createProgram(vertexShaderBlit, fragmentShaderMasked);
+    programScramble = createProgram(vertexShaderBlit, fragmentShaderScramble);
     
     // Create framebuffers and textures
     ({ fbo: fboCanon, texture: texCanon } = createFramebuffer(CANON_SIZE, CANON_SIZE));
     ({ fbo: fboSmall, texture: texSmall } = createFramebuffer(TILES_U, TILES_V));
+    ({ fbo: fboScramble, texture: texScramble } = createFramebuffer(TILES_U, TILES_V));
+
+    // Shared fullscreen quad VBO — reused by all fullscreen-blit helpers
+    quadVBO = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadVBO);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+        -1, -1,  0, 0,
+         1, -1,  1, 0,
+        -1,  1,  0, 1,
+         1,  1,  1, 1
+    ]), gl.STATIC_DRAW);
     
     // Create camera texture
     cameraTexture = gl.createTexture();
@@ -265,6 +431,10 @@ async function predictWebcam() {
     if (!webcamRunning) return;
     
     let startTimeMs = performance.now();
+
+    // Rotate geometry and color keys independently on their jittered schedules
+    if (rotateGeomKeyIfNeeded(startTimeMs))  refreshDisplacements();
+    if (rotateColorKeyIfNeeded(startTimeMs)) boundaryMaskTs = startTimeMs;
     
     // Only process if new frame
     if (lastVideoTime !== video.currentTime) {
@@ -338,7 +508,47 @@ async function predictWebcam() {
     requestAnimationFrame(predictWebcam);
 }
 
-// Render the pixelated face effect (two-pass pipeline)
+// ---------------------------------------------------------------------------
+// Anti-reconstruction: scramble pass helper
+//
+// Draws a fullscreen quad using programScramble, passing the subkey-derived
+// entropy as a vec4 uniform so the GPU-side hash changes every rotation.
+// ---------------------------------------------------------------------------
+function drawScramblePass(srcTexture) {
+    gl.useProgram(programScramble);
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadVBO);
+
+    const aPos = gl.getAttribLocation(programScramble, 'aPos');
+    const aUV  = gl.getAttribLocation(programScramble, 'aUV');
+    gl.enableVertexAttribArray(aPos);
+    gl.enableVertexAttribArray(aUV);
+    gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 16, 0);
+    gl.vertexAttribPointer(aUV,  2, gl.FLOAT, false, 16, 8);
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, srcTexture);
+    gl.uniform1i(gl.getUniformLocation(programScramble, 'uTex'), 0);
+    gl.uniform2f(gl.getUniformLocation(programScramble, 'uTileGrid'), TILES_U, TILES_V);
+
+    // Color subkey — independent from geometry subkey
+    gl.uniform4f(
+        gl.getUniformLocation(programScramble, 'uScrambleKey'),
+        (subKeyColor[0] >>> 0) / 4294967296,
+        (subKeyColor[1] >>> 0) / 4294967296,
+        (subKeyColor[2] >>> 0) / 4294967296,
+        (subKeyColor[3] >>> 0) / 4294967296
+    );
+
+    // Boundary mask: 1.0 immediately after color-key rotation, decays to 0
+    gl.uniform1f(
+        gl.getUniformLocation(programScramble, 'uBoundaryMask'),
+        getBoundaryMask(performance.now())
+    );
+
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+
+// Render the pixelated face effect (multi-pass pipeline)
 function renderPixelatedFace(landmarks) {
     // PASS A: Unwrap camera to canonical UV space
     gl.bindFramebuffer(gl.FRAMEBUFFER, fboCanon);
@@ -353,15 +563,21 @@ function renderPixelatedFace(landmarks) {
     gl.clear(gl.COLOR_BUFFER_BIT);
     drawFullscreenQuad(programBlit, texCanon, TILES_U, TILES_V);
     
-    // PIXELATION: Upsample back with NEAREST to get chunky pixels
-    gl.bindTexture(gl.TEXTURE_2D, texSmall);
+    // SCRAMBLE: permute tiles + remap colors (anti-reconstruction)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fboScramble);
+    gl.viewport(0, 0, TILES_U, TILES_V);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    drawScramblePass(texSmall);
+    
+    // PIXELATION: Upsample scrambled tiles with NEAREST for chunky pixels
+    gl.bindTexture(gl.TEXTURE_2D, texScramble);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     
     gl.bindFramebuffer(gl.FRAMEBUFFER, fboCanon);
     gl.viewport(0, 0, CANON_SIZE, CANON_SIZE);
     gl.clear(gl.COLOR_BUFFER_BIT);
-    drawFullscreenQuad(programBlit, texSmall, CANON_SIZE, CANON_SIZE);
+    drawFullscreenQuad(programBlit, texScramble, CANON_SIZE, CANON_SIZE);
     
     // PASS B: Rewrap canonical UV to screen space
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -408,6 +624,9 @@ function renderFaceMesh(program, landmarks, triIndexBuffer, texture, isPassA) {
     // Build vertex data: [sx, sy, szNDC, u, v] (5 floats)
     const VERTS = new Float32Array(triIndexBuffer.length * 5);
     
+    // Geometry hysteresis: lerp old→new displacement over GEOM_HYSTERESIS_MS
+    const blend = getGeomBlend(performance.now());
+    
     for (let t = 0; t < triIndexBuffer.length; t++) {
         const i = triIndexBuffer[t];
         const lm = landmarks[i];
@@ -421,9 +640,18 @@ function renderFaceMesh(program, landmarks, triIndexBuffer, texture, isPassA) {
             sy = centerY + (sy - centerY) * FACE_SCALE_Y_DOWN;
         }
         
+        // Anti-reconstruction: apply geometry distortion (lerp prev→curr)
+        const di = i * 3;
+        const dx = displacePrev[di + 0] * (1 - blend) + displaceCurr[di + 0] * blend;
+        const dy = displacePrev[di + 1] * (1 - blend) + displaceCurr[di + 1] * blend;
+        const dz = displacePrev[di + 2] * (1 - blend) + displaceCurr[di + 2] * blend;
+        sx += dx * W;
+        sy += dy * H;
+        
         // Normalize z to NDC [-1..1] so near (more negative) is closer
         const znorm = (lm.z - zmax) / ((zmin - zmax) + zEps); // 0..1 with 1 = nearest
-        const szNDC = -1.0 + 2.0 * (1.0 - znorm);             // map so nearer → smaller z
+        let szNDC = -1.0 + 2.0 * (1.0 - znorm);               // map so nearer → smaller z
+        szNDC += dz;
         
         const u = canonicalUVs[i * 2 + 0];
         const v = canonicalUVs[i * 2 + 1];
@@ -470,62 +698,42 @@ function renderFaceMesh(program, landmarks, triIndexBuffer, texture, isPassA) {
 // Draw fullscreen quad (for blit operations)
 function drawFullscreenQuad(program, texture, width, height) {
     gl.useProgram(program);
-    
-    const vertices = new Float32Array([
-        -1, -1,  0, 0,
-         1, -1,  1, 0,
-        -1,  1,  0, 1,
-         1,  1,  1, 1
-    ]);
-    
-    const vbo = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
-    gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
-    
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadVBO);
+
     const aPos = gl.getAttribLocation(program, 'aPos');
-    const aUV = gl.getAttribLocation(program, 'aUV');
-    
+    const aUV  = gl.getAttribLocation(program, 'aUV');
     gl.enableVertexAttribArray(aPos);
     gl.enableVertexAttribArray(aUV);
-    
     gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 16, 0);
-    gl.vertexAttribPointer(aUV, 2, gl.FLOAT, false, 16, 8);
-    
+    gl.vertexAttribPointer(aUV,  2, gl.FLOAT, false, 16, 8);
+
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, texture);
     gl.uniform1i(gl.getUniformLocation(program, 'uTex'), 0);
-    
+
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-    
-    gl.deleteBuffer(vbo);
 }
 
 // Draw video with segmentation mask applied
 function drawMaskedVideo() {
     gl.useProgram(programMasked);
-    const vertices = new Float32Array([
-        -1, -1,  0, 0,
-         1, -1,  1, 0,
-        -1,  1,  0, 1,
-         1,  1,  1, 1
-    ]);
-    const vbo = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
-    gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadVBO);
+
     const aPos = gl.getAttribLocation(programMasked, 'aPos');
-    const aUV = gl.getAttribLocation(programMasked, 'aUV');
+    const aUV  = gl.getAttribLocation(programMasked, 'aUV');
     gl.enableVertexAttribArray(aPos);
     gl.enableVertexAttribArray(aUV);
     gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 16, 0);
-    gl.vertexAttribPointer(aUV, 2, gl.FLOAT, false, 16, 8);
+    gl.vertexAttribPointer(aUV,  2, gl.FLOAT, false, 16, 8);
+
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, cameraTexture);
     gl.uniform1i(gl.getUniformLocation(programMasked, 'uTex'), 0);
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, maskTexture);
     gl.uniform1i(gl.getUniformLocation(programMasked, 'uMask'), 1);
+
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-    gl.deleteBuffer(vbo);
 }
 
 // PASS A: Unwrap camera to canonical UV
@@ -612,6 +820,58 @@ void main() {
     vec4 color = texture2D(uTex, uv);
     vec4 mask = texture2D(uMask, uv);
     gl_FragColor = vec4(color.rgb, color.a * mask.a);
+}
+`;
+
+// ---------------------------------------------------------------------------
+// Anti-reconstruction: tile scramble + color remap shader
+//
+// Operates on the tiny TILES_U x TILES_V texture. For each tile:
+//   1. Spatially permutes: swaps the sample location with a random neighbor
+//      so the mosaic blocks no longer map 1:1 to real face regions.
+//   2. Applies a per-tile color shift that avoids the green-screen band,
+//      destroying the true skin-tone averages an attacker would need.
+//
+// Both operations are seeded from uScrambleKey (derived from the rotating
+// subkey), so the permutation changes every subkey window.
+// ---------------------------------------------------------------------------
+const fragmentShaderScramble = `
+precision mediump float;
+uniform sampler2D uTex;
+uniform vec2  uTileGrid;      // vec2(TILES_U, TILES_V)
+uniform vec4  uScrambleKey;   // color subkey, independent of geometry key
+uniform float uBoundaryMask;  // [0..1] — 1=just-rotated (black), 0=settled
+varying vec2 vUV;
+
+float hash(vec2 p, float seed) {
+    return fract(sin(dot(p + seed, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+void main() {
+    vec2 tileCoord = floor(vUV * uTileGrid);
+
+    // Spatial permutation: offset sample to a random neighboring tile
+    float h = hash(tileCoord, uScrambleKey.x);
+    vec2 offset = vec2(
+        floor(h * 3.0) - 1.0,
+        floor(fract(h * 7.0) * 3.0) - 1.0
+    );
+    vec2 srcTile = clamp(tileCoord + offset, vec2(0.0), uTileGrid - 1.0);
+    vec2 srcUV   = (srcTile + 0.5) / uTileGrid;
+
+    vec4 color = texture2D(uTex, srcUV);
+
+    // Per-tile color remap: shift RGB while suppressing green to avoid
+    // blending into the chroma-key background
+    float hShift = hash(tileCoord, uScrambleKey.y) * 0.3 - 0.15;
+    float bShift = hash(tileCoord, uScrambleKey.z) * 0.2 - 0.1;
+    color.r = clamp(color.r + hShift + bShift, 0.0, 1.0);
+    color.g = clamp(color.g - abs(hShift) * 0.5, 0.0, 1.0);
+    color.b = clamp(color.b - hShift + bShift, 0.0, 1.0);
+
+    // Boundary mask: briefly fade face tiles to opaque black on key rotation.
+    // Destroys frame-boundary correlations without touching the background.
+    gl_FragColor = mix(color, vec4(0.0, 0.0, 0.0, 1.0), uBoundaryMask);
 }
 `;
 
