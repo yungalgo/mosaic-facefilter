@@ -15,6 +15,7 @@ saw someone using this filter on instagram and couldn't find it anywhere, so i j
 - runs at 60fps with GPU acceleration
 - works with OBS for streaming
 - face-only mode hides everything except the mosaic for maximum anonymity
+- scramble mode warps face geometry and shuffles tile colors/positions to prevent frame-averaging reconstruction
 
 ## requirements
 
@@ -95,6 +96,9 @@ uses mediapipe to track 468 face points, then renders chunky pixels that follow 
 two-tier detection: fast bbox pixelation kicks in immediately, then switches to high-quality mesh-based rendering once tracking locks.
 
 ## updates
+
+**february 25, 2026**
+- added **scramble mode** toggle for anti-reconstruction privacy hardening. when enabled, face geometry is randomly warped, mosaic tiles are shuffled and color-shifted, and brief black flashes break frame-boundary correlations. makes it significantly harder to reverse the mosaic effect by averaging frames. off by default. (contributed by [@aliutiev](https://github.com/aliutiev))
 
 **november 9, 2025**
 - added **face-only mode** toggle for maximum anonymity. when enabled, shows only the pixelated face on a chroma green background. if no face is detected, screen goes completely blank. perfect for zero-leak privacy streaming.

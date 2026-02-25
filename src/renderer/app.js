@@ -6,6 +6,7 @@ const video = document.getElementById('webcam');
 const canvas = document.getElementById('output');
 const cameraSelect = document.getElementById('cameraSelect');
 const faceOnlyToggle = document.getElementById('faceOnlyToggle');
+const scrambleToggle = document.getElementById('scrambleToggle');
 const gl = canvas.getContext('webgl', { 
     premultipliedAlpha: false,
     antialias: false,
@@ -433,8 +434,11 @@ async function predictWebcam() {
     let startTimeMs = performance.now();
 
     // Rotate geometry and color keys independently on their jittered schedules
-    if (rotateGeomKeyIfNeeded(startTimeMs))  refreshDisplacements();
-    if (rotateColorKeyIfNeeded(startTimeMs)) boundaryMaskTs = startTimeMs;
+    const scrambleOn = scrambleToggle && scrambleToggle.checked;
+    if (scrambleOn) {
+        if (rotateGeomKeyIfNeeded(startTimeMs))  refreshDisplacements();
+        if (rotateColorKeyIfNeeded(startTimeMs)) boundaryMaskTs = startTimeMs;
+    }
     
     // Only process if new frame
     if (lastVideoTime !== video.currentTime) {
@@ -550,49 +554,56 @@ function drawScramblePass(srcTexture) {
 
 // Render the pixelated face effect (multi-pass pipeline)
 function renderPixelatedFace(landmarks) {
+    const scrambleOn = scrambleToggle && scrambleToggle.checked;
+
     // PASS A: Unwrap camera to canonical UV space
     gl.bindFramebuffer(gl.FRAMEBUFFER, fboCanon);
     gl.viewport(0, 0, CANON_SIZE, CANON_SIZE);
     gl.clear(gl.COLOR_BUFFER_BIT);
-    
+
     renderFaceMesh(programPassA, landmarks, TRI, cameraTexture, true);
-    
+
     // PIXELATION: Downsample canonical to tile grid size
     gl.bindFramebuffer(gl.FRAMEBUFFER, fboSmall);
     gl.viewport(0, 0, TILES_U, TILES_V);
     gl.clear(gl.COLOR_BUFFER_BIT);
     drawFullscreenQuad(programBlit, texCanon, TILES_U, TILES_V);
-    
-    // SCRAMBLE: permute tiles + remap colors (anti-reconstruction)
-    gl.bindFramebuffer(gl.FRAMEBUFFER, fboScramble);
-    gl.viewport(0, 0, TILES_U, TILES_V);
-    gl.clear(gl.COLOR_BUFFER_BIT);
-    drawScramblePass(texSmall);
-    
-    // PIXELATION: Upsample scrambled tiles with NEAREST for chunky pixels
-    gl.bindTexture(gl.TEXTURE_2D, texScramble);
+
+    // Choose upsample source: scrambled tiles or plain tiles
+    let upsampleTex = texSmall;
+    if (scrambleOn) {
+        // SCRAMBLE: permute tiles + remap colors (anti-reconstruction)
+        gl.bindFramebuffer(gl.FRAMEBUFFER, fboScramble);
+        gl.viewport(0, 0, TILES_U, TILES_V);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        drawScramblePass(texSmall);
+        upsampleTex = texScramble;
+    }
+
+    // PIXELATION: Upsample with NEAREST for chunky pixels
+    gl.bindTexture(gl.TEXTURE_2D, upsampleTex);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    
+
     gl.bindFramebuffer(gl.FRAMEBUFFER, fboCanon);
     gl.viewport(0, 0, CANON_SIZE, CANON_SIZE);
     gl.clear(gl.COLOR_BUFFER_BIT);
-    drawFullscreenQuad(programBlit, texScramble, CANON_SIZE, CANON_SIZE);
-    
+    drawFullscreenQuad(programBlit, upsampleTex, CANON_SIZE, CANON_SIZE);
+
     // PASS B: Rewrap canonical UV to screen space
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, canvas.width, canvas.height);
-    
+
     // Enable depth test for proper occlusion
     gl.enable(gl.DEPTH_TEST);
     gl.depthFunc(gl.LEQUAL);
     gl.clear(gl.DEPTH_BUFFER_BIT);
-    
+
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-    
+
     renderFaceMesh(programPassB, landmarks, TRI, texCanon, false);
-    
+
     gl.disable(gl.BLEND);
     gl.disable(gl.DEPTH_TEST);
 }
@@ -623,35 +634,41 @@ function renderFaceMesh(program, landmarks, triIndexBuffer, texture, isPassA) {
     
     // Build vertex data: [sx, sy, szNDC, u, v] (5 floats)
     const VERTS = new Float32Array(triIndexBuffer.length * 5);
-    
-    // Geometry hysteresis: lerp old→new displacement over GEOM_HYSTERESIS_MS
-    const blend = getGeomBlend(performance.now());
-    
+
+    const scrambleOn = scrambleToggle && scrambleToggle.checked;
+    const blend = scrambleOn ? getGeomBlend(performance.now()) : 0;
+
     for (let t = 0; t < triIndexBuffer.length; t++) {
         const i = triIndexBuffer[t];
         const lm = landmarks[i];
-        
+
         // Extend only downward (chin area), keep X and top Y unchanged
         let sx = lm.x * W;
         let sy = lm.y * H;
-        
+
         // Only scale Y downward (below center)
         if (sy > centerY) {
             sy = centerY + (sy - centerY) * FACE_SCALE_Y_DOWN;
         }
-        
+
         // Anti-reconstruction: apply geometry distortion (lerp prev→curr)
-        const di = i * 3;
-        const dx = displacePrev[di + 0] * (1 - blend) + displaceCurr[di + 0] * blend;
-        const dy = displacePrev[di + 1] * (1 - blend) + displaceCurr[di + 1] * blend;
-        const dz = displacePrev[di + 2] * (1 - blend) + displaceCurr[di + 2] * blend;
-        sx += dx * W;
-        sy += dy * H;
-        
+        if (scrambleOn) {
+            const di = i * 3;
+            const dx = displacePrev[di + 0] * (1 - blend) + displaceCurr[di + 0] * blend;
+            const dy = displacePrev[di + 1] * (1 - blend) + displaceCurr[di + 1] * blend;
+            const dz = displacePrev[di + 2] * (1 - blend) + displaceCurr[di + 2] * blend;
+            sx += dx * W;
+            sy += dy * H;
+        }
+
         // Normalize z to NDC [-1..1] so near (more negative) is closer
         const znorm = (lm.z - zmax) / ((zmin - zmax) + zEps); // 0..1 with 1 = nearest
         let szNDC = -1.0 + 2.0 * (1.0 - znorm);               // map so nearer → smaller z
-        szNDC += dz;
+        if (scrambleOn) {
+            const di = i * 3;
+            const dz = displacePrev[di + 2] * (1 - blend) + displaceCurr[di + 2] * blend;
+            szNDC += dz;
+        }
         
         const u = canonicalUVs[i * 2 + 0];
         const v = canonicalUVs[i * 2 + 1];
