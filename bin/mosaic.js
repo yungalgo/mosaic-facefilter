@@ -16,8 +16,8 @@ function printHelp() {
         '  --extend "<prompt>"        After mosaicking, use fal.ai LTX to generate a\n' +
         '                             continuation and replace the output with it.\n' +
         '  --extend-duration <secs>   Continuation length (default 5).\n' +
-        '  --extend-context <secs>    Seconds of the input video used as context\n' +
-        '                             (default 10, min 1, max 20).\n' +
+        '  --extend-context <secs>    Seconds of input to use as context (min 1, max\n' +
+        '                             20). If omitted, fal.ai picks the max available.\n' +
         '  --fal-key <key>            Provide the fal.ai key inline; auto-saved to\n' +
         '                             ~/.mosaic/fal-key for future runs.\n' +
         '  -h, --help                 Show this help.\n\n' +
@@ -31,7 +31,7 @@ let input = null;
 let output = null;
 let extendPrompt = null;
 let extendDuration = 5;
-let extendContext = 10;
+let extendContext = null; // null = let fal pick (max available)
 let falKey = null;
 
 for (let i = 0; i < argv.length; i++) {
@@ -87,9 +87,9 @@ const childArgs = [appDir, '--cli', input, output];
 if (extendPrompt) {
     childArgs.push(
         '--extend', extendPrompt,
-        '--extend-duration', String(extendDuration),
-        '--extend-context', String(extendContext)
+        '--extend-duration', String(extendDuration)
     );
+    if (extendContext != null) childArgs.push('--extend-context', String(extendContext));
 
     // Key resolution precedence: --fal-key, then FAL_KEY env, then ~/.mosaic/fal-key.
     // If the user passed --fal-key, persist it for future runs.

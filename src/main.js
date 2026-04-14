@@ -13,7 +13,7 @@ const cliExtendPrompt = extendIdx !== -1 ? process.argv[extendIdx + 1] : null;
 const extendDurIdx = process.argv.indexOf('--extend-duration');
 const cliExtendDuration = extendDurIdx !== -1 ? parseFloat(process.argv[extendDurIdx + 1]) : 5;
 const extendCtxIdx = process.argv.indexOf('--extend-context');
-const cliExtendContext = extendCtxIdx !== -1 ? parseFloat(process.argv[extendCtxIdx + 1]) : 10;
+const cliExtendContext = extendCtxIdx !== -1 ? parseFloat(process.argv[extendCtxIdx + 1]) : null;
 
 function createWindow() {
     const win = new BrowserWindow({
@@ -248,24 +248,37 @@ async function runExtend(videoPath, prompt, duration, context) {
     blob.name = path.basename(videoPath);
     const videoUrl = await fal.storage.upload(blob);
 
-    process.stdout.write(`mosaic: extending "${prompt}" (+${duration}s, context=${context}s)...\n`);
-    const result = await fal.subscribe('fal-ai/ltx-2.3/extend-video', {
-        input: {
-            video_url: videoUrl,
-            prompt,
-            duration,
-            mode: 'end',
-            context
-        },
-        logs: true,
-        onQueueUpdate: (update) => {
-            if (update.status === 'IN_PROGRESS' && update.logs) {
-                update.logs.forEach((l) => {
-                    if (l.message) process.stdout.write(`  [fal] ${l.message}\n`);
-                });
-            }
+    // Clamp context so we don't request more context than the source has.
+    // Source duration is in seconds; fal requires min 1s, max 20s.
+    const srcDur = probeDurationOf(videoPath);
+    const input = { video_url: videoUrl, prompt, duration, mode: 'end' };
+    if (context != null && !Number.isNaN(context)) {
+        const maxCtx = Math.min(20, Math.max(1, Math.floor(srcDur)));
+        const clamped = Math.max(1, Math.min(context, maxCtx));
+        if (clamped !== context) {
+            process.stdout.write(`mosaic: clamping context ${context}s → ${clamped}s (source is ${srcDur.toFixed(2)}s)\n`);
         }
-    });
+        input.context = clamped;
+    }
+
+    process.stdout.write(`mosaic: extending "${prompt}" (+${duration}s${input.context ? `, context=${input.context}s` : ''})...\n`);
+    let result;
+    try {
+        result = await fal.subscribe('fal-ai/ltx-2.3/extend-video', {
+            input,
+            logs: true,
+            onQueueUpdate: (update) => {
+                if (update.status === 'IN_PROGRESS' && update.logs) {
+                    update.logs.forEach((l) => {
+                        if (l.message) process.stdout.write(`  [fal] ${l.message}\n`);
+                    });
+                }
+            }
+        });
+    } catch (e) {
+        const detail = e && (e.body || e.response || e.message) || String(e);
+        throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+    }
 
     const extUrl = result.data && result.data.video && result.data.video.url;
     if (!extUrl) throw new Error('fal response missing video.url: ' + JSON.stringify(result.data));
@@ -275,6 +288,17 @@ async function runExtend(videoPath, prompt, duration, context) {
     const extBuf = Buffer.from(await extRes.arrayBuffer());
     fs.writeFileSync(videoPath, extBuf);
     process.stdout.write(`mosaic: wrote extended ${videoPath}\n`);
+}
+
+function probeDurationOf(file) {
+    const ffprobe = resolveBinary('ffprobe-static');
+    const out = spawnSync(ffprobe, [
+        '-v', 'error',
+        '-show_entries', 'format=duration',
+        '-of', 'default=nw=1:nk=1',
+        file
+    ], { encoding: 'utf8' });
+    return parseFloat((out.stdout || '0').trim()) || 0;
 }
 
 // ---------------- Lifecycle ----------------
