@@ -12,6 +12,8 @@ const extendIdx = process.argv.indexOf('--extend');
 const cliExtendPrompt = extendIdx !== -1 ? process.argv[extendIdx + 1] : null;
 const extendDurIdx = process.argv.indexOf('--extend-duration');
 const cliExtendDuration = extendDurIdx !== -1 ? parseFloat(process.argv[extendDurIdx + 1]) : 5;
+const extendCtxIdx = process.argv.indexOf('--extend-context');
+const cliExtendContext = extendCtxIdx !== -1 ? parseFloat(process.argv[extendCtxIdx + 1]) : 10;
 
 function createWindow() {
     const win = new BrowserWindow({
@@ -218,7 +220,7 @@ function runCli() {
             process.stdout.write(`mosaic: wrote ${cliOutput}\n`);
             if (cliExtendPrompt) {
                 try {
-                    await runExtend(cliOutput, cliExtendPrompt, cliExtendDuration);
+                    await runExtend(cliOutput, cliExtendPrompt, cliExtendDuration, cliExtendContext);
                 } catch (e) {
                     process.stderr.write(`mosaic: extend failed: ${e.message}\n`);
                     app.exit(1);
@@ -234,7 +236,7 @@ function runCli() {
 
 // ---------------- Extend via fal.ai ----------------
 
-async function runExtend(videoPath, prompt, duration) {
+async function runExtend(videoPath, prompt, duration, context) {
     const { fal } = require('@fal-ai/client');
     const falKey = process.env.FAL_KEY;
     if (!falKey) throw new Error('FAL_KEY env var not set');
@@ -242,19 +244,18 @@ async function runExtend(videoPath, prompt, duration) {
 
     process.stdout.write(`mosaic: uploading to fal.ai...\n`);
     const buf = fs.readFileSync(videoPath);
-    // fal.storage.upload accepts a Blob/File; in Node we wrap the buffer.
     const blob = new Blob([buf], { type: 'video/mp4' });
-    blob.name = path.basename(videoPath); // some fal versions look for .name
+    blob.name = path.basename(videoPath);
     const videoUrl = await fal.storage.upload(blob);
-    process.stdout.write(`mosaic: fal url: ${videoUrl}\n`);
 
-    process.stdout.write(`mosaic: extending "${prompt}" (${duration}s)...\n`);
+    process.stdout.write(`mosaic: extending "${prompt}" (+${duration}s, context=${context}s)...\n`);
     const result = await fal.subscribe('fal-ai/ltx-2.3/extend-video', {
         input: {
             video_url: videoUrl,
             prompt,
             duration,
-            mode: 'end'
+            mode: 'end',
+            context
         },
         logs: true,
         onQueueUpdate: (update) => {
@@ -268,143 +269,12 @@ async function runExtend(videoPath, prompt, duration) {
 
     const extUrl = result.data && result.data.video && result.data.video.url;
     if (!extUrl) throw new Error('fal response missing video.url: ' + JSON.stringify(result.data));
-    process.stdout.write(`mosaic: downloading extension...\n`);
+    process.stdout.write(`mosaic: downloading...\n`);
     const extRes = await fetch(extUrl);
     if (!extRes.ok) throw new Error(`download failed: ${extRes.status}`);
     const extBuf = Buffer.from(await extRes.arrayBuffer());
-    const extTmp = path.join(require('os').tmpdir(), `mosaic-ext-${Date.now()}.mp4`);
-    fs.writeFileSync(extTmp, extBuf);
-
-    // The fal response may be either (a) just the new extension segment, or
-    // (b) the full input + extension concatenated. Determine which by
-    // comparing duration against the original. If it's "full", trim off the
-    // leading portion that overlaps with the original so we only concat the
-    // genuinely new tail. Always concat with the locally-produced mosaic so
-    // the output ends up at the original resolution (LTX re-encodes at a
-    // reduced resolution internally).
-    const extDur = probeDuration(extTmp);
-    const origDur = probeDuration(videoPath);
-    process.stdout.write(`mosaic: fal clip ${extDur.toFixed(2)}s (original ${origDur.toFixed(2)}s)\n`);
-
-    let tailPath = extTmp;
-    if (extDur > origDur + 0.5) {
-        // Trim to only the new tail
-        tailPath = path.join(require('os').tmpdir(), `mosaic-tail-${Date.now()}.mp4`);
-        await trimFrom(extTmp, origDur, tailPath);
-        const tailDur = probeDuration(tailPath);
-        process.stdout.write(`mosaic: trimmed new tail to ${tailDur.toFixed(2)}s\n`);
-    }
-
-    const finalTmp = path.join(require('os').tmpdir(), `mosaic-final-${Date.now()}${path.extname(videoPath)}`);
-    process.stdout.write(`mosaic: concatenating...\n`);
-    await concatTwo(videoPath, tailPath, finalTmp);
-
-    fs.copyFileSync(finalTmp, videoPath);
-    try { fs.unlinkSync(extTmp); } catch {}
-    if (tailPath !== extTmp) { try { fs.unlinkSync(tailPath); } catch {} }
-    try { fs.unlinkSync(finalTmp); } catch {}
+    fs.writeFileSync(videoPath, extBuf);
     process.stdout.write(`mosaic: wrote extended ${videoPath}\n`);
-}
-
-function trimFrom(input, startSec, output) {
-    return new Promise((resolve, reject) => {
-        const ffmpeg = resolveBinary('ffmpeg-static');
-        const args = [
-            '-y', '-hide_banner', '-loglevel', 'error',
-            '-ss', String(startSec),
-            '-i', input,
-            '-c:v', 'libx264', '-preset', 'medium', '-crf', '18', '-pix_fmt', 'yuv420p',
-            '-c:a', 'aac', '-b:a', '192k',
-            output
-        ];
-        const proc = spawn(ffmpeg, args, { stdio: ['ignore', 'inherit', 'inherit'] });
-        proc.on('close', (code) => code === 0 ? resolve() : reject(new Error('trim ffmpeg exit ' + code)));
-        proc.on('error', reject);
-    });
-}
-
-function probeDuration(file) {
-    const ffprobe = resolveBinary('ffprobe-static');
-    const out = spawnSync(ffprobe, [
-        '-v', 'error',
-        '-show_entries', 'format=duration',
-        '-of', 'default=nw=1:nk=1',
-        file
-    ], { encoding: 'utf8' });
-    return parseFloat((out.stdout || '0').trim()) || 0;
-}
-
-function concatTwo(a, b, out) {
-    return new Promise((resolve, reject) => {
-        const ffmpeg = resolveBinary('ffmpeg-static');
-        // Re-encode to guarantee compatibility across codec/dim/sar differences
-        // between our mosaic output and the fal-generated clip. Both tracks are
-        // scaled/padded to the source's dimensions and get a silence track when
-        // one side is missing audio.
-        const aHasAudio = probeHasAudio(a);
-        const bHasAudio = probeHasAudio(b);
-        const { w, h } = probeDims(a);
-        const scaleFix = `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:-1:-1:color=black,setsar=1`;
-
-        const args = [
-            '-y', '-hide_banner', '-loglevel', 'error',
-            '-i', a,
-            '-i', b,
-        ];
-
-        let fc = `[0:v]${scaleFix}[v0];[1:v]${scaleFix}[v1];`;
-        if (aHasAudio && bHasAudio) {
-            fc += `[v0][0:a][v1][1:a]concat=n=2:v=1:a=1[v][aout]`;
-            args.push('-filter_complex', fc, '-map', '[v]', '-map', '[aout]');
-        } else if (aHasAudio && !bHasAudio) {
-            // Synthesize silent audio for b matching a's sample rate
-            fc += `[v0][v1]concat=n=2:v=1:a=0[v];` +
-                  `anullsrc=channel_layout=stereo:sample_rate=44100,atrim=0:${probeDuration(b)}[bsil];` +
-                  `[0:a][bsil]concat=n=2:v=0:a=1[aout]`;
-            args.push('-filter_complex', fc, '-map', '[v]', '-map', '[aout]');
-        } else if (!aHasAudio && bHasAudio) {
-            fc += `[v0][v1]concat=n=2:v=1:a=0[v];` +
-                  `anullsrc=channel_layout=stereo:sample_rate=44100,atrim=0:${probeDuration(a)}[asil];` +
-                  `[asil][1:a]concat=n=2:v=0:a=1[aout]`;
-            args.push('-filter_complex', fc, '-map', '[v]', '-map', '[aout]');
-        } else {
-            fc += `[v0][v1]concat=n=2:v=1:a=0[v]`;
-            args.push('-filter_complex', fc, '-map', '[v]');
-        }
-
-        args.push('-c:v', 'libx264', '-preset', 'medium', '-crf', '18', '-pix_fmt', 'yuv420p');
-        if (aHasAudio || bHasAudio) args.push('-c:a', 'aac', '-b:a', '192k');
-        args.push(out);
-
-        const proc = spawn(ffmpeg, args, { stdio: ['ignore', 'inherit', 'inherit'] });
-        proc.on('close', (code) => code === 0 ? resolve() : reject(new Error('concat ffmpeg exit ' + code)));
-        proc.on('error', reject);
-    });
-}
-
-function probeHasAudio(file) {
-    const ffprobe = resolveBinary('ffprobe-static');
-    const out = spawnSync(ffprobe, [
-        '-v', 'error',
-        '-select_streams', 'a',
-        '-show_entries', 'stream=codec_type',
-        '-of', 'csv=p=0',
-        file
-    ], { encoding: 'utf8' });
-    return !!(out.stdout && out.stdout.trim());
-}
-
-function probeDims(file) {
-    const ffprobe = resolveBinary('ffprobe-static');
-    const out = spawnSync(ffprobe, [
-        '-v', 'error',
-        '-select_streams', 'v:0',
-        '-show_entries', 'stream=width,height',
-        '-of', 'csv=p=0',
-        file
-    ], { encoding: 'utf8' });
-    const [w, h] = (out.stdout || '').trim().split(',').map(Number);
-    return { w: w || 1920, h: h || 1080 };
 }
 
 // ---------------- Lifecycle ----------------
