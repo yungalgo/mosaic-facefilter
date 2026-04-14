@@ -286,8 +286,37 @@ async function runExtend(videoPath, prompt, duration, context) {
     const extRes = await fetch(extUrl);
     if (!extRes.ok) throw new Error(`download failed: ${extRes.status}`);
     const extBuf = Buffer.from(await extRes.arrayBuffer());
-    fs.writeFileSync(videoPath, extBuf);
+    const extTmp = path.join(require('os').tmpdir(), `mosaic-fal-${Date.now()}.mp4`);
+    fs.writeFileSync(extTmp, extBuf);
+
+    // fal returns h264 yuv444p High-4:4:4-Predictive which QuickTime and many
+    // consumer players refuse. Transcode to the broadly-compatible
+    // h264/yuv420p main-profile combo so the output plays everywhere.
+    process.stdout.write(`mosaic: normalizing to yuv420p...\n`);
+    await transcodeForCompat(extTmp, videoPath);
+    try { fs.unlinkSync(extTmp); } catch {}
     process.stdout.write(`mosaic: wrote extended ${videoPath}\n`);
+}
+
+function transcodeForCompat(input, output) {
+    return new Promise((resolve, reject) => {
+        const ffmpeg = resolveBinary('ffmpeg-static');
+        const args = [
+            '-y', '-hide_banner', '-loglevel', 'error',
+            '-i', input,
+            '-c:v', 'libx264',
+            '-profile:v', 'high',
+            '-pix_fmt', 'yuv420p',
+            '-preset', 'medium',
+            '-crf', '18',
+            '-c:a', 'aac', '-b:a', '192k',
+            '-movflags', '+faststart',
+            output
+        ];
+        const proc = spawn(ffmpeg, args, { stdio: ['ignore', 'inherit', 'inherit'] });
+        proc.on('close', (code) => code === 0 ? resolve() : reject(new Error(`transcode ffmpeg exit ${code}`)));
+        proc.on('error', reject);
+    });
 }
 
 function probeDurationOf(file) {
