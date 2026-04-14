@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>mosaic-cli</title>
+    <style>
+        html, body { margin: 0; padding: 0; background: #000; overflow: hidden; }
+        #output { display: block; }
+        #webcam { display: none; }
+    </style>
+</head>
+<body>
+    <canvas id="output"></canvas>
+    <video id="webcam" playsinline muted></video>
+    <script type="module" src="processor.js"></script>
+</body>
+</html>
